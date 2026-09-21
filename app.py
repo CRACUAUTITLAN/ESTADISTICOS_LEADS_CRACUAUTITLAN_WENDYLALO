@@ -23,7 +23,7 @@ DICCIONARIO_VENDEDORES = {
 }
 
 # Caché reducida a 10 segundos para forzar la actualización en la depuración
-@st.cache_data(ttl=10)
+#@st.cache_data(ttl=10)
 def cargar_cartera_global():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
