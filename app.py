@@ -22,16 +22,14 @@ DICCIONARIO_VENDEDORES = {
     "HILDA": "1ObtW2sRdgGvyotTOvl0lEM4erASM4KyWvj1uoyOKiPk"
 }
 
-# Caché de 1 hora para no hacer peticiones a Google cada que alguien mueva un filtro
-@st.cache_data(ttl=3600)
+# Caché reducida a 10 segundos para forzar la actualización en la depuración
+@st.cache_data(ttl=10)
 def cargar_cartera_global():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
     client = gspread.authorize(creds)
     
     lista_dfs = []
-    
-    # Barra de progreso visual mientras Streamlit descarga los 11 archivos
     barra_progreso = st.progress(0, text="Conectando con bases de asesores...")
     total_vendedores = len(DICCIONARIO_VENDEDORES)
     
@@ -40,27 +38,23 @@ def cargar_cartera_global():
             hoja = client.open_by_key(id_archivo).sheet1
             datos = hoja.get_all_values()
             
-            # Según tu estructura, la fila 7 (índice 6) tiene los encabezados
-            # y los datos reales empiezan en la fila 8 (índice 7)
             if len(datos) > 7:
                 df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
-                # Inyectamos una columna extra para saber de quién es este lead
                 df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
                 lista_dfs.append(df_temporal)
                 
         except Exception as e:
-            st.warning(f"No se pudo leer la base de {nombre}: {e}")
+            # 🚨 AQUÍ CAZAMOS EL ERROR TÉCNICO EXACTO
+            st.warning(f"Error en {nombre} -> Tipo: {type(e).__name__} | Detalle: {repr(e)}")
             
-        # Actualizar barra de progreso
         barra_progreso.progress((idx + 1) / total_vendedores, text=f"Descargando datos de {nombre}...")
     
-    barra_progreso.empty() # Ocultar barra al terminar
+    barra_progreso.empty()
     
-    # Unir todos los excel en un solo DataFrame
     if lista_dfs:
         df_global = pd.concat(lista_dfs, ignore_index=True)
-        # Limpiar filas vacías basándonos en la columna de Fecha de Solicitud (que es la H, índice 8 en las 21 columnas)
-        df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
+        if 'FECHA SOLICITUD' in df_global.columns:
+            df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
         return df_global
     else:
         return pd.DataFrame()
@@ -68,24 +62,31 @@ def cargar_cartera_global():
 df = cargar_cartera_global()
 
 if df.empty:
-    st.error("No se encontraron datos. Verifica las credenciales y los IDs.")
+    st.error("No se extrajo ningún dato. Revisa los mensajes de advertencia arriba y envíamelos para identificar el bloqueo.")
     st.stop()
 
 # --- FILTROS LATERALES ---
 st.sidebar.header("Filtros")
 asesor_filtro = st.sidebar.multiselect("Asesor", options=df["ASESOR ASIGNADO"].unique(), default=df["ASESOR ASIGNADO"].unique())
-plataforma_filtro = st.sidebar.multiselect("Plataforma", options=df["PLATAFORMA"].unique(), default=df["PLATAFORMA"].unique())
 
-df_filtrado = df[(df["ASESOR ASIGNADO"].isin(asesor_filtro)) & (df["PLATAFORMA"].isin(plataforma_filtro))]
+if "PLATAFORMA" in df.columns:
+    plataforma_filtro = st.sidebar.multiselect("Plataforma", options=df["PLATAFORMA"].unique(), default=df["PLATAFORMA"].unique())
+    df_filtrado = df[(df["ASESOR ASIGNADO"].isin(asesor_filtro)) & (df["PLATAFORMA"].isin(plataforma_filtro))]
+else:
+    df_filtrado = df[df["ASESOR ASIGNADO"].isin(asesor_filtro)]
 
 # --- KPIs PRINCIPALES ---
 col1, col2, col3, col4 = st.columns(4)
 total_leads = len(df_filtrado)
 
-# Mapeo de columnas según tu estructura de 21 columnas
-# Columna PRIMER FILTRO (L) y ESTATUS PROSPECTO (Q)
-leads_interes = len(df_filtrado[df_filtrado["PRIMER FILTRO"] == "PROSPECTO CON INTERES"])
-ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["CIERRE DE VENTA", "FACTURADO"])])
+leads_interes = 0
+ventas_cerradas = 0
+
+if "PRIMER FILTRO" in df_filtrado.columns:
+    leads_interes = len(df_filtrado[df_filtrado["PRIMER FILTRO"] == "PROSPECTO CON INTERES"])
+
+if "ESTATUS PROSPECTO" in df_filtrado.columns:
+    ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["CIERRE DE VENTA", "FACTURADO"])])
 
 col1.metric("Total Leads Asignados", total_leads)
 col2.metric("Prospectos con Interés", leads_interes)
@@ -99,14 +100,25 @@ row1_col1, row1_col2 = st.columns(2)
 
 with row1_col1:
     st.subheader("Tráfico por Plataforma")
-    fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-    st.plotly_chart(fig_plat, use_container_width=True)
+    if "PLATAFORMA" in df_filtrado.columns:
+        fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+        st.plotly_chart(fig_plat, use_container_width=True)
+    else:
+        st.info("Columna PLATAFORMA no encontrada en la base.")
 
 with row1_col2:
     st.subheader("Rendimiento por Asesor")
-    rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'PRIMER FILTRO']).size().reset_index(name='CANTIDAD')
-    fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='PRIMER FILTRO', barmode='stack')
-    st.plotly_chart(fig_asesor, use_container_width=True)
+    if "PRIMER FILTRO" in df_filtrado.columns:
+        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'PRIMER FILTRO']).size().reset_index(name='CANTIDAD')
+        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='PRIMER FILTRO', barmode='stack')
+        st.plotly_chart(fig_asesor, use_container_width=True)
+    else:
+        st.info("Columna PRIMER FILTRO no encontrada en la base.")
 
 st.subheader("Detalle de Cartera Activa")
-st.dataframe(df_filtrado[['ASESOR ASIGNADO', 'FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'PRIMER FILTRO', 'ESTATUS PROSPECTO']], use_container_width=True)
+columnas_mostrar = ['ASESOR ASIGNADO']
+for col in ['FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'PRIMER FILTRO', 'ESTATUS PROSPECTO']:
+    if col in df_filtrado.columns:
+        columnas_mostrar.append(col)
+        
+st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
