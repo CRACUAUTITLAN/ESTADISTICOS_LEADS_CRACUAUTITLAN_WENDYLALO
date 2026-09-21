@@ -22,8 +22,7 @@ DICCIONARIO_VENDEDORES = {
     "HILDA": "1ObtW2sRdgGvyotTOvl0lEM4erASM4KyWvj1uoyOKiPk"
 }
 
-# Caché reducida a 10 segundos para forzar la actualización en la depuración
-#@st.cache_data(ttl=10)
+# Caché eliminada para evitar el bloqueo local PermissionError (Errno 13)
 def cargar_cartera_global():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
@@ -44,7 +43,6 @@ def cargar_cartera_global():
                 lista_dfs.append(df_temporal)
                 
         except Exception as e:
-            # 🚨 AQUÍ CAZAMOS EL ERROR TÉCNICO EXACTO
             st.warning(f"Error en {nombre} -> Tipo: {type(e).__name__} | Detalle: {repr(e)}")
             
         barra_progreso.progress((idx + 1) / total_vendedores, text=f"Descargando datos de {nombre}...")
