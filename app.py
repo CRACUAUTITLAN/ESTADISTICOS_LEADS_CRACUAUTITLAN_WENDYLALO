@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import gspread
-from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="CRM BI | Consolidado", layout="wide")
 st.title("📊 Panel de Inteligencia Comercial y Leads")
@@ -22,11 +21,9 @@ DICCIONARIO_VENDEDORES = {
     "HILDA": "1ObtW2sRdgGvyotTOvl0lEM4erASM4KyWvj1uoyOKiPk"
 }
 
-# Caché eliminada para evitar el bloqueo local PermissionError (Errno 13)
 def cargar_cartera_global():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
-    client = gspread.authorize(creds)
+    # Conexión oficial y directa de gspread usando los secretos de Streamlit
+    client = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
     
     lista_dfs = []
     barra_progreso = st.progress(0, text="Conectando con bases de asesores...")
@@ -43,7 +40,7 @@ def cargar_cartera_global():
                 lista_dfs.append(df_temporal)
                 
         except Exception as e:
-            st.warning(f"Error en {nombre} -> Tipo: {type(e).__name__} | Detalle: {repr(e)}")
+            st.warning(f"Error al leer {nombre} -> {repr(e)}")
             
         barra_progreso.progress((idx + 1) / total_vendedores, text=f"Descargando datos de {nombre}...")
     
@@ -60,7 +57,7 @@ def cargar_cartera_global():
 df = cargar_cartera_global()
 
 if df.empty:
-    st.error("No se extrajo ningún dato. Revisa los mensajes de advertencia arriba y envíamelos para identificar el bloqueo.")
+    st.error("No se extrajo ningún dato. Verifica que la API de Google Sheets esté habilitada en Google Cloud.")
     st.stop()
 
 # --- FILTROS LATERALES ---
