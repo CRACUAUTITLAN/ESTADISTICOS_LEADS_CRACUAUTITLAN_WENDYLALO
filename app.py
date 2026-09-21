@@ -22,7 +22,6 @@ DICCIONARIO_VENDEDORES = {
 }
 
 def cargar_cartera_global():
-    # Conexión oficial y directa de gspread usando los secretos de Streamlit
     client = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
     
     lista_dfs = []
@@ -36,6 +35,13 @@ def cargar_cartera_global():
             
             if len(datos) > 7:
                 df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
+                
+                # 🚀 SOLUCIÓN AL ERROR DE PANDAS: Limpieza de encabezados
+                # 1. Eliminar columnas que estén completamente vacías o sin título
+                df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
+                # 2. Eliminar columnas duplicadas por si alguien repitió un título
+                df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
+                
                 df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
                 lista_dfs.append(df_temporal)
                 
@@ -57,7 +63,7 @@ def cargar_cartera_global():
 df = cargar_cartera_global()
 
 if df.empty:
-    st.error("No se extrajo ningún dato. Verifica que la API de Google Sheets esté habilitada en Google Cloud.")
+    st.error("No se extrajo ningún dato. Verifica las bases de los vendedores.")
     st.stop()
 
 # --- FILTROS LATERALES ---
@@ -77,11 +83,10 @@ total_leads = len(df_filtrado)
 leads_interes = 0
 ventas_cerradas = 0
 
-if "PRIMER FILTRO" in df_filtrado.columns:
-    leads_interes = len(df_filtrado[df_filtrado["PRIMER FILTRO"] == "PROSPECTO CON INTERES"])
-
-if "ESTATUS PROSPECTO" in df_filtrado.columns:
-    ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["CIERRE DE VENTA", "FACTURADO"])])
+# Ajustado a tus opciones reales de la columna ESTATUS
+if "ESTATUS" in df_filtrado.columns:
+    leads_interes = len(df_filtrado[df_filtrado["ESTATUS"] == "EN PROCESO DE TRATO"])
+    ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS"] == "VENTA EXITOSA"])
 
 col1.metric("Total Leads Asignados", total_leads)
 col2.metric("Prospectos con Interés", leads_interes)
@@ -103,16 +108,16 @@ with row1_col1:
 
 with row1_col2:
     st.subheader("Rendimiento por Asesor")
-    if "PRIMER FILTRO" in df_filtrado.columns:
-        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'PRIMER FILTRO']).size().reset_index(name='CANTIDAD')
-        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='PRIMER FILTRO', barmode='stack')
+    if "ESTATUS" in df_filtrado.columns:
+        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS']).size().reset_index(name='CANTIDAD')
+        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS', barmode='stack')
         st.plotly_chart(fig_asesor, use_container_width=True)
     else:
-        st.info("Columna PRIMER FILTRO no encontrada en la base.")
+        st.info("Columna ESTATUS no encontrada en la base.")
 
 st.subheader("Detalle de Cartera Activa")
 columnas_mostrar = ['ASESOR ASIGNADO']
-for col in ['FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'PRIMER FILTRO', 'ESTATUS PROSPECTO']:
+for col in ['FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTARIO ASESOR']:
     if col in df_filtrado.columns:
         columnas_mostrar.append(col)
         
