@@ -1,0 +1,112 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import gspread
+from google.oauth2.service_account import Credentials
+
+st.set_page_config(page_title="CRM BI | Consolidado", layout="wide")
+st.title("📊 Panel de Inteligencia Comercial y Leads")
+
+# Diccionario maestro unificado (Cuautitlán + Tultitlán)
+DICCIONARIO_VENDEDORES = {
+    "DIEGO CORTES": "1YdiB2hYOnN6IB_GGamQw3pyXW3HZ3Yf0h20PtoQO7dI",
+    "JAVIER HERNANDEZ": "1LnvTonTQpWIajhLDEF3S4okQgvxB9n_SnV3JCJcnC80",
+    "JOEL CASTILLO": "14b_jY7oJIrrc4S0hsDxOamdp0SYMfcRRVm3WIbC5m8o",
+    "LAURA SANCHEZ": "1IEmNudo6MZ6ijelaYbKSOE2leO_U7b5OEzdHL-AUtSw",
+    "MAYRA GOMEZ": "1pyJb_U7IysUlqsRZ2fXcTBv7Jcw6_df_-_6gLurg2uo",
+    "OMAR GONZALEZ": "16tehCRepOnxfAbMAOmyyS5fPkO3zK76THHsm6oNF1N8",
+    "PAMELA ECHANOVE": "11rM-910TasuoGpYxbZ2ki9fEeo39zcImCqGzagI8Wbs",
+    "VICTOR LOPEZ": "15KVbsq7bgATMizIALHq5R-iZnfl02si-uBBgiGEcsvU",
+    "AURORA": "1e4BLDYERX4E7ILgQzaFviXCDHD9P3ayfaZteXYt8vzU",
+    "GRACIELA": "1LP78iCEn7Na9iP_4DQaKVA_nNLhy8kdDBJnSgELN25Q",
+    "HILDA": "1ObtW2sRdgGvyotTOvl0lEM4erASM4KyWvj1uoyOKiPk"
+}
+
+# Caché de 1 hora para no hacer peticiones a Google cada que alguien mueva un filtro
+@st.cache_data(ttl=3600)
+def cargar_cartera_global():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+    client = gspread.authorize(creds)
+    
+    lista_dfs = []
+    
+    # Barra de progreso visual mientras Streamlit descarga los 11 archivos
+    barra_progreso = st.progress(0, text="Conectando con bases de asesores...")
+    total_vendedores = len(DICCIONARIO_VENDEDORES)
+    
+    for idx, (nombre, id_archivo) in enumerate(DICCIONARIO_VENDEDORES.items()):
+        try:
+            hoja = client.open_by_key(id_archivo).sheet1
+            datos = hoja.get_all_values()
+            
+            # Según tu estructura, la fila 7 (índice 6) tiene los encabezados
+            # y los datos reales empiezan en la fila 8 (índice 7)
+            if len(datos) > 7:
+                df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
+                # Inyectamos una columna extra para saber de quién es este lead
+                df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
+                lista_dfs.append(df_temporal)
+                
+        except Exception as e:
+            st.warning(f"No se pudo leer la base de {nombre}: {e}")
+            
+        # Actualizar barra de progreso
+        barra_progreso.progress((idx + 1) / total_vendedores, text=f"Descargando datos de {nombre}...")
+    
+    barra_progreso.empty() # Ocultar barra al terminar
+    
+    # Unir todos los excel en un solo DataFrame
+    if lista_dfs:
+        df_global = pd.concat(lista_dfs, ignore_index=True)
+        # Limpiar filas vacías basándonos en la columna de Fecha de Solicitud (que es la H, índice 8 en las 21 columnas)
+        df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
+        return df_global
+    else:
+        return pd.DataFrame()
+
+df = cargar_cartera_global()
+
+if df.empty:
+    st.error("No se encontraron datos. Verifica las credenciales y los IDs.")
+    st.stop()
+
+# --- FILTROS LATERALES ---
+st.sidebar.header("Filtros")
+asesor_filtro = st.sidebar.multiselect("Asesor", options=df["ASESOR ASIGNADO"].unique(), default=df["ASESOR ASIGNADO"].unique())
+plataforma_filtro = st.sidebar.multiselect("Plataforma", options=df["PLATAFORMA"].unique(), default=df["PLATAFORMA"].unique())
+
+df_filtrado = df[(df["ASESOR ASIGNADO"].isin(asesor_filtro)) & (df["PLATAFORMA"].isin(plataforma_filtro))]
+
+# --- KPIs PRINCIPALES ---
+col1, col2, col3, col4 = st.columns(4)
+total_leads = len(df_filtrado)
+
+# Mapeo de columnas según tu estructura de 21 columnas
+# Columna PRIMER FILTRO (L) y ESTATUS PROSPECTO (Q)
+leads_interes = len(df_filtrado[df_filtrado["PRIMER FILTRO"] == "PROSPECTO CON INTERES"])
+ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["CIERRE DE VENTA", "FACTURADO"])])
+
+col1.metric("Total Leads Asignados", total_leads)
+col2.metric("Prospectos con Interés", leads_interes)
+col3.metric("Ventas Cerradas", ventas_cerradas)
+col4.metric("Tasa de Cierre", f"{(ventas_cerradas / total_leads * 100):.1f}%" if total_leads > 0 else "0%")
+
+st.markdown("---")
+
+# --- GRÁFICOS BI ---
+row1_col1, row1_col2 = st.columns(2)
+
+with row1_col1:
+    st.subheader("Tráfico por Plataforma")
+    fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+    st.plotly_chart(fig_plat, use_container_width=True)
+
+with row1_col2:
+    st.subheader("Rendimiento por Asesor")
+    rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'PRIMER FILTRO']).size().reset_index(name='CANTIDAD')
+    fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='PRIMER FILTRO', barmode='stack')
+    st.plotly_chart(fig_asesor, use_container_width=True)
+
+st.subheader("Detalle de Cartera Activa")
+st.dataframe(df_filtrado[['ASESOR ASIGNADO', 'FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'PRIMER FILTRO', 'ESTATUS PROSPECTO']], use_container_width=True)
