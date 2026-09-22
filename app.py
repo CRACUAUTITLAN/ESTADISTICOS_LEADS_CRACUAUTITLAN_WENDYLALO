@@ -6,7 +6,7 @@ import gspread
 st.set_page_config(page_title="CRM BI | Consolidado", layout="wide")
 
 # =========================================================================
-# 1. SISTEMA DE SEGURIDAD Y LOGIN (st.session_state)
+# 1. SISTEMA DE SEGURIDAD Y LOGIN
 # =========================================================================
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
@@ -29,15 +29,13 @@ if not st.session_state["autenticado"]:
                 else:
                     st.error("❌ Usuario o contraseña incorrectos")
     
-    # Detiene la ejecución del código para quienes no han iniciado sesión
     st.stop() 
 
 # =========================================================================
-# 2. CARGA DE DATOS Y CACHÉ
+# 2. CARGA DE DATOS Y EXTRACCIÓN DE FECHAS
 # =========================================================================
 st.title("📊 Panel de Inteligencia Comercial y Leads")
 
-# Lista de validación de agencias
 VENDEDORES_TULTITLAN = ["AURORA", "GRACIELA", "HILDA"]
 
 DICCIONARIO_VENDEDORES = {
@@ -54,7 +52,6 @@ DICCIONARIO_VENDEDORES = {
     "HILDA": "1ObtW2sRdgGvyotTOvl0lEM4erASM4KyWvj1uoyOKiPk"
 }
 
-# La caché guarda la base de datos en la nube para que los filtros sean instantáneos
 @st.cache_data(show_spinner=False)
 def cargar_cartera_global():
     client = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
@@ -71,11 +68,9 @@ def cargar_cartera_global():
             if len(datos) > 7:
                 df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
                 
-                # Limpieza de encabezados
                 df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
                 df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
                 
-                # Inyectar Asesor y Agencia dinámicamente
                 df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
                 agencia = "CRA TULTITLAN" if nombre in VENDEDORES_TULTITLAN else "CRA CUAUTITLAN"
                 df_temporal.insert(1, 'AGENCIA', agencia)
@@ -94,16 +89,28 @@ def cargar_cartera_global():
         if 'FECHA SOLICITUD' in df_global.columns:
             df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
             
-            # --- MOTOR DE FECHAS (Extrae el MES/AÑO para los filtros) ---
+            # --- MOTOR DE FECHAS PARA LOS FILTROS ---
             df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
-            df_global['MES'] = df_global['FECHA_DATETIME'].dt.strftime('%Y-%m') # Crea el formato: 2026-08
-            df_global['MES'] = df_global['MES'].fillna('SIN FECHA')
+            
+            # Extraer AÑO
+            df_global['AÑO'] = df_global['FECHA_DATETIME'].dt.year.fillna(0).astype(int).astype(str)
+            df_global['AÑO'] = df_global['AÑO'].replace('0', 'SIN FECHA')
+            
+            # Extraer MES en número (para ordenar) y en Letras (para mostrar)
+            df_global['MES_NUM'] = df_global['FECHA_DATETIME'].dt.month.fillna(0).astype(int)
+            meses_map = {
+                1: 'ENERO', 2: 'FEBRERO', 3: 'MARZO', 4: 'ABRIL',
+                5: 'MAYO', 6: 'JUNIO', 7: 'JULIO', 8: 'AGOSTO',
+                9: 'SEPTIEMBRE', 10: 'OCTUBRE', 11: 'NOVIEMBRE', 12: 'DICIEMBRE',
+                0: 'SIN FECHA'
+            }
+            df_global['MES'] = df_global['MES_NUM'].map(meses_map)
             
         return df_global
     else:
         return pd.DataFrame()
 
-with st.spinner("Descargando bases de datos (esto solo tomará tiempo al iniciar sesión)..."):
+with st.spinner("Descargando bases de datos (esto solo toma tiempo al iniciar sesión)..."):
     df = cargar_cartera_global()
 
 if df.empty:
@@ -111,35 +118,50 @@ if df.empty:
     st.stop()
 
 # =========================================================================
-# 3. FILTROS EN CASCADA
+# 3. FILTROS EN MENÚS DESPLEGABLES (Expanders + Checkboxes)
 # =========================================================================
 st.sidebar.header("Filtros del Tablero")
 
-# Botón manual para limpiar caché si se requiere ver leads que acaban de caer
 if st.sidebar.button("🔄 Actualizar Leads Nuevos", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
 st.sidebar.markdown("---")
 
-# 1. Filtro de Agencia Principal
-agencia_seleccionada = st.sidebar.selectbox("SELECCIONA AGENCIA", ["AMBAS SUCURSALES", "CRA CUAUTITLAN", "CRA TULTITLAN"])
+# 1. Filtro de Agencia
+with st.sidebar.expander("🏢 SELECCIONA AGENCIA", expanded=False):
+    agencias = ["CRA CUAUTITLAN", "CRA TULTITLAN"]
+    agencias_seleccionadas = [ag for ag in agencias if st.checkbox(ag, value=True, key=f"ag_{ag}")]
 
-if agencia_seleccionada != "AMBAS SUCURSALES":
-    df_agencia = df[df["AGENCIA"] == agencia_seleccionada]
-else:
-    df_agencia = df
+df_agencia = df[df["AGENCIA"].isin(agencias_seleccionadas)]
 
-# 2. Filtro de Mes (Se nutre automáticamente de la agencia seleccionada)
-meses_disponibles = sorted(df_agencia["MES"].unique(), reverse=True)
-mes_filtro = st.sidebar.multiselect("Mes de Solicitud (Año-Mes)", options=meses_disponibles, default=meses_disponibles)
+# 2. Filtro de Año
+with st.sidebar.expander("📅 SELECCIONA AÑO", expanded=False):
+    anios_disp = sorted([a for a in df_agencia["AÑO"].unique() if a != 'SIN FECHA'], reverse=True)
+    if 'SIN FECHA' in df_agencia["AÑO"].unique():
+        anios_disp.append('SIN FECHA')
+    
+    anios_seleccionados = [a for a in anios_disp if st.checkbox(str(a), value=True, key=f"ano_{a}")]
 
-# 3. Filtro de Asesor (Muestra solo a los asesores de la agencia elegida)
-asesores_disponibles = sorted(df_agencia["ASESOR ASIGNADO"].unique())
-asesor_filtro = st.sidebar.multiselect("Asesor", options=asesores_disponibles, default=asesores_disponibles)
+df_ano = df_agencia[df_agencia["AÑO"].isin(anios_seleccionados)]
 
-# Matriz final de aplicación de filtros
-df_filtrado = df_agencia[(df_agencia["ASESOR ASIGNADO"].isin(asesor_filtro)) & (df_agencia["MES"].isin(mes_filtro))]
+# 3. Filtro de Mes
+with st.sidebar.expander("📆 SELECCIONA MES", expanded=False):
+    # Aislar meses únicos y ordenarlos de mayor a menor (Diciembre a Enero) según su número
+    meses_unicos = df_ano[["MES_NUM", "MES"]].drop_duplicates().sort_values(by="MES_NUM", ascending=False)
+    meses_disp = meses_unicos["MES"].tolist()
+    
+    meses_seleccionados = [m for m in meses_disp if st.checkbox(m, value=True, key=f"mes_{m}")]
+
+df_mes = df_ano[df_ano["MES"].isin(meses_seleccionados)]
+
+# 4. Filtro de Asesor
+with st.sidebar.expander("🧑‍💼 SELECCIONA ASESOR", expanded=False):
+    asesores_disp = sorted(df_mes["ASESOR ASIGNADO"].unique())
+    asesores_seleccionados = [as_ for as_ in asesores_disp if st.checkbox(as_, value=True, key=f"as_{as_}")]
+
+# Matriz final para los gráficos
+df_filtrado = df_mes[df_mes["ASESOR ASIGNADO"].isin(asesores_seleccionados)]
 
 # =========================================================================
 # 4. MÓDULOS DEL TABLERO BI
@@ -165,20 +187,20 @@ row1_col1, row1_col2 = st.columns(2)
 
 with row1_col1:
     st.subheader("Tráfico por Plataforma")
-    if "PLATAFORMA" in df_filtrado.columns:
+    if "PLATAFORMA" in df_filtrado.columns and total_leads > 0:
         fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
         st.plotly_chart(fig_plat, use_container_width=True)
     else:
-        st.info("Columna PLATAFORMA no encontrada en la base.")
+        st.info("No hay datos para graficar con los filtros actuales.")
 
 with row1_col2:
     st.subheader("Rendimiento por Asesor")
-    if "ESTATUS" in df_filtrado.columns:
+    if "ESTATUS" in df_filtrado.columns and total_leads > 0:
         rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS']).size().reset_index(name='CANTIDAD')
         fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS', barmode='stack')
         st.plotly_chart(fig_asesor, use_container_width=True)
     else:
-        st.info("Columna ESTATUS no encontrada en la base.")
+        st.info("No hay datos para graficar con los filtros actuales.")
 
 st.subheader("Detalle de Cartera Activa")
 columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO']
@@ -186,4 +208,7 @@ for col in ['FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTAR
     if col in df_filtrado.columns:
         columnas_mostrar.append(col)
         
-st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
+if total_leads > 0:
+    st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
+else:
+    st.warning("No hay registros que coincidan con los filtros seleccionados.")
