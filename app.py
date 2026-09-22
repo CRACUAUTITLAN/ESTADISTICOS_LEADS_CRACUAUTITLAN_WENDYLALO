@@ -89,6 +89,10 @@ def cargar_cartera_global():
         if 'FECHA SOLICITUD' in df_global.columns:
             df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
             
+            # --- LIMPIEZA DE ESTATUS VACÍOS ---
+            if 'ESTATUS' in df_global.columns:
+                df_global['ESTATUS'] = df_global['ESTATUS'].replace("", "PROSPECTO SIN ATENDER")
+            
             # --- MOTOR DE FECHAS PARA LOS FILTROS ---
             df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
             
@@ -145,10 +149,10 @@ with st.sidebar.expander("📅 SELECCIONA AÑO", expanded=False):
 
 df_ano = df_agencia[df_agencia["AÑO"].isin(anios_seleccionados)]
 
-# 3. Filtro de Mes
+# 3. Filtro de Mes (ORDENADO CRONOLÓGICAMENTE)
 with st.sidebar.expander("📆 SELECCIONA MES", expanded=False):
-    # Aislar meses únicos y ordenarlos de mayor a menor (Diciembre a Enero) según su número
-    meses_unicos = df_ano[["MES_NUM", "MES"]].drop_duplicates().sort_values(by="MES_NUM", ascending=False)
+    # Ordenar ascendente por número de mes (1 al 12)
+    meses_unicos = df_ano[["MES_NUM", "MES"]].drop_duplicates().sort_values(by="MES_NUM", ascending=True)
     meses_disp = meses_unicos["MES"].tolist()
     
     meses_seleccionados = [m for m in meses_disp if st.checkbox(m, value=True, key=f"mes_{m}")]
@@ -160,55 +164,97 @@ with st.sidebar.expander("🧑‍💼 SELECCIONA ASESOR", expanded=False):
     asesores_disp = sorted(df_mes["ASESOR ASIGNADO"].unique())
     asesores_seleccionados = [as_ for as_ in asesores_disp if st.checkbox(as_, value=True, key=f"as_{as_}")]
 
-# Matriz final para los gráficos
-df_filtrado = df_mes[df_mes["ASESOR ASIGNADO"].isin(asesores_seleccionados)]
+# Matriz final ordenada para gráficos evolutivos
+df_filtrado = df_mes[df_mes["ASESOR ASIGNADO"].isin(asesores_seleccionados)].sort_values(by="MES_NUM")
 
 # =========================================================================
-# 4. MÓDULOS DEL TABLERO BI
+# 4. SISTEMA DE PESTAÑAS (TABS)
 # =========================================================================
-col1, col2, col3, col4 = st.columns(4)
-total_leads = len(df_filtrado)
+tab_general, tab_asesor = st.tabs(["📊 GENERAL (Marketing & Demanda)", "🧑‍💼 ASESOR (Rendimiento & Seguimiento)"])
 
-leads_interes = 0
-ventas_cerradas = 0
+# ---------------------------------------------------------
+# PESTAÑA 1: GENERAL
+# ---------------------------------------------------------
+with tab_general:
+    # KPIs Generales
+    col1, col2, col3, col4 = st.columns(4)
+    total_leads = len(df_filtrado)
+    leads_interes = len(df_filtrado[df_filtrado["ESTATUS"] == "EN PROCESO DE TRATO"]) if "ESTATUS" in df_filtrado.columns else 0
+    ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS"] == "VENTA EXITOSA"]) if "ESTATUS" in df_filtrado.columns else 0
 
-if "ESTATUS" in df_filtrado.columns:
-    leads_interes = len(df_filtrado[df_filtrado["ESTATUS"] == "EN PROCESO DE TRATO"])
-    ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS"] == "VENTA EXITOSA"])
+    col1.metric("Total Leads Filtrados", total_leads)
+    col2.metric("Prospectos con Interés", leads_interes)
+    col3.metric("Ventas Cerradas", ventas_cerradas)
+    col4.metric("Tasa de Cierre", f"{(ventas_cerradas / total_leads * 100):.1f}%" if total_leads > 0 else "0%")
 
-col1.metric("Total Leads Filtrados", total_leads)
-col2.metric("Prospectos con Interés", leads_interes)
-col3.metric("Ventas Cerradas", ventas_cerradas)
-col4.metric("Tasa de Cierre", f"{(ventas_cerradas / total_leads * 100):.1f}%" if total_leads > 0 else "0%")
+    st.markdown("---")
 
-st.markdown("---")
-
-row1_col1, row1_col2 = st.columns(2)
-
-with row1_col1:
-    st.subheader("Tráfico por Plataforma")
-    if "PLATAFORMA" in df_filtrado.columns and total_leads > 0:
-        fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-        st.plotly_chart(fig_plat, use_container_width=True)
-    else:
-        st.info("No hay datos para graficar con los filtros actuales.")
-
-with row1_col2:
-    st.subheader("Rendimiento por Asesor")
-    if "ESTATUS" in df_filtrado.columns and total_leads > 0:
-        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS']).size().reset_index(name='CANTIDAD')
-        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS', barmode='stack')
-        st.plotly_chart(fig_asesor, use_container_width=True)
-    else:
-        st.info("No hay datos para graficar con los filtros actuales.")
-
-st.subheader("Detalle de Cartera Activa")
-columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO']
-for col in ['FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTARIO ASESOR']:
-    if col in df_filtrado.columns:
-        columnas_mostrar.append(col)
+    if total_leads > 0:
+        # Fila 1 de Gráficos: Origen y Rendimiento de Anuncios
+        gen_row1_col1, gen_row1_col2 = st.columns([1, 2])
         
-if total_leads > 0:
-    st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
-else:
-    st.warning("No hay registros que coincidan con los filtros seleccionados.")
+        with gen_row1_col1:
+            st.subheader("Plataforma Más Utilizada")
+            if "PLATAFORMA" in df_filtrado.columns:
+                fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+                st.plotly_chart(fig_plat, use_container_width=True)
+                
+        with gen_row1_col2:
+            st.subheader("Evolución Mensual por Anuncio")
+            if "ANUNCIO" in df_filtrado.columns:
+                fig_ad = px.histogram(df_filtrado, x='MES', color='ANUNCIO', barmode='group', 
+                                      color_discrete_sequence=px.colors.qualitative.Safe)
+                fig_ad.update_layout(xaxis_title="", yaxis_title="Cantidad de Leads")
+                st.plotly_chart(fig_ad, use_container_width=True)
+
+        # Fila 2 de Gráficos: Demanda de Unidades
+        st.subheader("Crecimiento de Demanda por Unidad de Interés")
+        
+        # Validar nombre exacto de la columna en tu base ("UNIDAD INTERES" o "UNIDAD DE INTERES")
+        col_unidad = "UNIDAD DE INTERES" if "UNIDAD DE INTERES" in df_filtrado.columns else "UNIDAD INTERES"
+        
+        if col_unidad in df_filtrado.columns:
+            fig_unidad = px.histogram(df_filtrado, x='MES', color=col_unidad, barmode='stack',
+                                      color_discrete_sequence=px.colors.qualitative.Bold)
+            fig_unidad.update_layout(xaxis_title="Mes", yaxis_title="Cotizaciones / Interés")
+            st.plotly_chart(fig_unidad, use_container_width=True)
+    else:
+        st.warning("No hay registros que coincidan con los filtros seleccionados.")
+
+# ---------------------------------------------------------
+# PESTAÑA 2: ASESOR
+# ---------------------------------------------------------
+with tab_asesor:
+    st.subheader("Nivel de Atención y Seguimiento por Asesor")
+    
+    if total_leads > 0 and "ESTATUS" in df_filtrado.columns:
+        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS']).size().reset_index(name='CANTIDAD')
+        
+        # Mapa de colores para obligar al sistema a pintar de ROJO los que no tienen atención
+        mapa_colores = {
+            "PROSPECTO SIN ATENDER": "#ff4b4b", # Rojo Alerta
+            "EN PROCESO DE TRATO": "#3b82f6",   # Azul
+            "VENTA EXITOSA": "#22c55e",         # Verde
+            "YA NO TIENE INTERÉS": "#f97316",   # Naranja
+            "ERROR DE CAPTURA": "#64748b"       # Gris
+        }
+        
+        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS', barmode='stack',
+                            color_discrete_map=mapa_colores)
+        fig_asesor.update_layout(xaxis_title="", yaxis_title="Leads Asignados")
+        st.plotly_chart(fig_asesor, use_container_width=True)
+    elif total_leads == 0:
+        st.warning("Ajusta los filtros para ver el rendimiento.")
+
+    st.markdown("---")
+    st.subheader("Auditoría: Detalle de Cartera Activa")
+    
+    columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD']
+    
+    # Validar qué columnas exactas existen antes de mostrarlas en la tabla
+    for col in ['ANUNCIO', col_unidad if 'col_unidad' in locals() else 'UNIDAD INTERES', 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTARIO ASESOR']:
+        if col in df_filtrado.columns:
+            columnas_mostrar.append(col)
+            
+    if total_leads > 0:
+        st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
