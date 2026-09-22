@@ -100,7 +100,7 @@ def cargar_cartera_global():
             df_global['AÑO'] = df_global['FECHA_DATETIME'].dt.year.fillna(0).astype(int).astype(str)
             df_global['AÑO'] = df_global['AÑO'].replace('0', 'SIN FECHA')
             
-            # Extraer MES en número (para ordenar) y en Letras (para mostrar)
+            # Extraer MES en número y texto
             df_global['MES_NUM'] = df_global['FECHA_DATETIME'].dt.month.fillna(0).astype(int)
             meses_map = {
                 1: 'ENERO', 2: 'FEBRERO', 3: 'MARZO', 4: 'ABRIL',
@@ -122,7 +122,7 @@ if df.empty:
     st.stop()
 
 # =========================================================================
-# 3. FILTROS EN MENÚS DESPLEGABLES (Expanders + Checkboxes)
+# 3. FILTROS EN MENÚS DESPLEGABLES
 # =========================================================================
 st.sidebar.header("Filtros del Tablero")
 
@@ -132,39 +132,31 @@ if st.sidebar.button("🔄 Actualizar Leads Nuevos", use_container_width=True):
 
 st.sidebar.markdown("---")
 
-# 1. Filtro de Agencia
 with st.sidebar.expander("🏢 SELECCIONA AGENCIA", expanded=False):
     agencias = ["CRA CUAUTITLAN", "CRA TULTITLAN"]
     agencias_seleccionadas = [ag for ag in agencias if st.checkbox(ag, value=True, key=f"ag_{ag}")]
 
 df_agencia = df[df["AGENCIA"].isin(agencias_seleccionadas)]
 
-# 2. Filtro de Año
 with st.sidebar.expander("📅 SELECCIONA AÑO", expanded=False):
     anios_disp = sorted([a for a in df_agencia["AÑO"].unique() if a != 'SIN FECHA'], reverse=True)
     if 'SIN FECHA' in df_agencia["AÑO"].unique():
         anios_disp.append('SIN FECHA')
-    
     anios_seleccionados = [a for a in anios_disp if st.checkbox(str(a), value=True, key=f"ano_{a}")]
 
 df_ano = df_agencia[df_agencia["AÑO"].isin(anios_seleccionados)]
 
-# 3. Filtro de Mes (ORDENADO CRONOLÓGICAMENTE)
 with st.sidebar.expander("📆 SELECCIONA MES", expanded=False):
-    # Ordenar ascendente por número de mes (1 al 12)
     meses_unicos = df_ano[["MES_NUM", "MES"]].drop_duplicates().sort_values(by="MES_NUM", ascending=True)
     meses_disp = meses_unicos["MES"].tolist()
-    
     meses_seleccionados = [m for m in meses_disp if st.checkbox(m, value=True, key=f"mes_{m}")]
 
 df_mes = df_ano[df_ano["MES"].isin(meses_seleccionados)]
 
-# 4. Filtro de Asesor
 with st.sidebar.expander("🧑‍💼 SELECCIONA ASESOR", expanded=False):
     asesores_disp = sorted(df_mes["ASESOR ASIGNADO"].unique())
     asesores_seleccionados = [as_ for as_ in asesores_disp if st.checkbox(as_, value=True, key=f"as_{as_}")]
 
-# Matriz final ordenada para gráficos evolutivos
 df_filtrado = df_mes[df_mes["ASESOR ASIGNADO"].isin(asesores_seleccionados)].sort_values(by="MES_NUM")
 
 # =========================================================================
@@ -176,7 +168,6 @@ tab_general, tab_asesor = st.tabs(["📊 GENERAL (Marketing & Demanda)", "🧑�
 # PESTAÑA 1: GENERAL
 # ---------------------------------------------------------
 with tab_general:
-    # KPIs Generales
     col1, col2, col3, col4 = st.columns(4)
     total_leads = len(df_filtrado)
     leads_interes = len(df_filtrado[df_filtrado["ESTATUS"] == "EN PROCESO DE TRATO"]) if "ESTATUS" in df_filtrado.columns else 0
@@ -186,13 +177,10 @@ with tab_general:
     col2.metric("Prospectos con Interés", leads_interes)
     col3.metric("Ventas Cerradas", ventas_cerradas)
     col4.metric("Tasa de Cierre", f"{(ventas_cerradas / total_leads * 100):.1f}%" if total_leads > 0 else "0%")
-
     st.markdown("---")
 
     if total_leads > 0:
-        # Fila 1 de Gráficos: Origen y Rendimiento de Anuncios
         gen_row1_col1, gen_row1_col2 = st.columns([1, 2])
-        
         with gen_row1_col1:
             st.subheader("Plataforma Más Utilizada")
             if "PLATAFORMA" in df_filtrado.columns:
@@ -207,12 +195,8 @@ with tab_general:
                 fig_ad.update_layout(xaxis_title="", yaxis_title="Cantidad de Leads")
                 st.plotly_chart(fig_ad, use_container_width=True)
 
-        # Fila 2 de Gráficos: Demanda de Unidades
         st.subheader("Crecimiento de Demanda por Unidad de Interés")
-        
-        # Validar nombre exacto de la columna en tu base ("UNIDAD INTERES" o "UNIDAD DE INTERES")
         col_unidad = "UNIDAD DE INTERES" if "UNIDAD DE INTERES" in df_filtrado.columns else "UNIDAD INTERES"
-        
         if col_unidad in df_filtrado.columns:
             fig_unidad = px.histogram(df_filtrado, x='MES', color=col_unidad, barmode='stack',
                                       color_discrete_sequence=px.colors.qualitative.Bold)
@@ -230,7 +214,6 @@ with tab_asesor:
     if total_leads > 0 and "ESTATUS" in df_filtrado.columns:
         rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS']).size().reset_index(name='CANTIDAD')
         
-        # Mapa de colores para obligar al sistema a pintar de ROJO los que no tienen atención
         mapa_colores = {
             "PROSPECTO SIN ATENDER": "#ff4b4b", # Rojo Alerta
             "EN PROCESO DE TRATO": "#3b82f6",   # Azul
@@ -247,14 +230,75 @@ with tab_asesor:
         st.warning("Ajusta los filtros para ver el rendimiento.")
 
     st.markdown("---")
-    st.subheader("Auditoría: Detalle de Cartera Activa")
     
+    # ---------------------------------------------------------
+    # NUEVO MÓDULO: RANKING JERÁRQUICO DE ATENCIÓN
+    # ---------------------------------------------------------
+    st.subheader("🏆 Ranking: Nivel de Atención por Asesor")
+    st.caption("Mide el porcentaje de prospectos que ya cuentan con un seguimiento capturado por el vendedor.")
+    
+    if total_leads > 0 and "COMENTARIO ASESOR" in df_filtrado.columns:
+        # Calcular Asignados vs Atendidos
+        df_ranking = df_filtrado.groupby('ASESOR ASIGNADO').agg(
+            LEADS_ASIGNADOS=('FECHA SOLICITUD', 'count'),
+            LEADS_ATENDIDOS=('COMENTARIO ASESOR', lambda x: (x.astype(str).str.strip() != "").sum())
+        ).reset_index()
+        
+        # Calcular Fórmula
+        df_ranking['NIVEL DE ATENCION (%)'] = (df_ranking['LEADS_ATENDIDOS'] / df_ranking['LEADS_ASIGNADOS']) * 100
+        df_ranking = df_ranking.sort_values(by='NIVEL DE ATENCION (%)', ascending=False)
+        
+        # Función para pintar el semáforo
+        def color_semaforo(val):
+            if val == 100:
+                return 'background-color: #d9ead3; color: #274e13; font-weight: bold;' # Verde
+            elif val >= 90:
+                return 'background-color: #fff2cc; color: #7f6000; font-weight: bold;' # Amarillo
+            else:
+                return 'background-color: #f4cccc; color: #990000; font-weight: bold;' # Rojo
+
+        # Mostrar tabla estilizada
+        st.dataframe(
+            df_ranking.style.map(color_semaforo, subset=['NIVEL DE ATENCION (%)']).format({'NIVEL DE ATENCION (%)': '{:.1f}%'}),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.markdown("---")
+    st.subheader("Auditoría: Desglose de Cartera")
+    
+    # Definir las columnas base que se mostrarán en todas las tablas
     columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD']
+    col_unidad_real = col_unidad if 'col_unidad' in locals() else 'UNIDAD INTERES'
     
-    # Validar qué columnas exactas existen antes de mostrarlas en la tabla
-    for col in ['ANUNCIO', col_unidad if 'col_unidad' in locals() else 'UNIDAD INTERES', 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTARIO ASESOR']:
+    for col in ['ANUNCIO', col_unidad_real, 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTARIO ASESOR']:
         if col in df_filtrado.columns:
             columnas_mostrar.append(col)
-            
-    if total_leads > 0:
-        st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
+
+    # ---------------------------------------------------------
+    # TABLAS DE DESGLOSE (Activa, Sin Atender, Perdida)
+    # ---------------------------------------------------------
+    if total_leads > 0 and "COMENTARIO ASESOR" in df_filtrado.columns:
+        
+        # Filtros de condiciones
+        condicion_comentario_lleno = df_filtrado["COMENTARIO ASESOR"].astype(str).str.strip() != ""
+        condicion_comentario_vacio = df_filtrado["COMENTARIO ASESOR"].astype(str).str.strip() == ""
+        
+        df_activa = df_filtrado[condicion_comentario_lleno & (df_filtrado["ESTATUS"].isin(["EN PROCESO DE TRATO", "VENTA EXITOSA"]))]
+        df_sin_atender = df_filtrado[condicion_comentario_vacio]
+        df_perdida = df_filtrado[condicion_comentario_lleno & (df_filtrado["ESTATUS"] == "YA NO TIENE INTERÉS")]
+
+        # Tabla 1
+        st.markdown("##### 🟢 Detalle de Cartera Activa")
+        st.caption("Prospectos que ya fueron atendidos (tienen comentario) y se mantienen en trato o se cerró la venta.")
+        st.dataframe(df_activa[columnas_mostrar], use_container_width=True, hide_index=True)
+
+        # Tabla 2
+        st.markdown("##### 🔴 Cartera Sin Atender")
+        st.caption("Prospectos que cayeron a la base pero el vendedor AÚN NO captura ningún comentario.")
+        st.dataframe(df_sin_atender[columnas_mostrar], use_container_width=True, hide_index=True)
+
+        # Tabla 3
+        st.markdown("##### 🟠 Cartera Perdida")
+        st.caption("Prospectos descartados tras la atención del vendedor.")
+        st.dataframe(df_perdida[columnas_mostrar], use_container_width=True, hide_index=True)
