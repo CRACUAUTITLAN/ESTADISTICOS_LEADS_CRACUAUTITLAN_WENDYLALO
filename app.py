@@ -4,9 +4,42 @@ import plotly.express as px
 import gspread
 
 st.set_page_config(page_title="CRM BI | Consolidado", layout="wide")
+
+# =========================================================================
+# 1. SISTEMA DE SEGURIDAD Y LOGIN (st.session_state)
+# =========================================================================
+if "autenticado" not in st.session_state:
+    st.session_state["autenticado"] = False
+
+if not st.session_state["autenticado"]:
+    st.markdown("<h2 style='text-align: center; color: #1c4587;'>🔒 Acceso al Sistema BI - Grupo Andrade</h2>", unsafe_allow_html=True)
+    st.write("")
+    
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        with st.form("login_form"):
+            usuario = st.text_input("Usuario")
+            password = st.text_input("Contraseña", type="password")
+            submit = st.form_submit_button("Iniciar Sesión", use_container_width=True)
+            
+            if submit:
+                if usuario == "CRA" and password == "CRA1234.":
+                    st.session_state["autenticado"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ Usuario o contraseña incorrectos")
+    
+    # Detiene la ejecución del código para quienes no han iniciado sesión
+    st.stop() 
+
+# =========================================================================
+# 2. CARGA DE DATOS Y CACHÉ
+# =========================================================================
 st.title("📊 Panel de Inteligencia Comercial y Leads")
 
-# Diccionario maestro unificado (Cuautitlán + Tultitlán)
+# Lista de validación de agencias
+VENDEDORES_TULTITLAN = ["AURORA", "GRACIELA", "HILDA"]
+
 DICCIONARIO_VENDEDORES = {
     "DIEGO CORTES": "1YdiB2hYOnN6IB_GGamQw3pyXW3HZ3Yf0h20PtoQO7dI",
     "JAVIER HERNANDEZ": "1LnvTonTQpWIajhLDEF3S4okQgvxB9n_SnV3JCJcnC80",
@@ -21,6 +54,8 @@ DICCIONARIO_VENDEDORES = {
     "HILDA": "1ObtW2sRdgGvyotTOvl0lEM4erASM4KyWvj1uoyOKiPk"
 }
 
+# La caché guarda la base de datos en la nube para que los filtros sean instantáneos
+@st.cache_data(show_spinner=False)
 def cargar_cartera_global():
     client = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
     
@@ -36,13 +71,15 @@ def cargar_cartera_global():
             if len(datos) > 7:
                 df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
                 
-                # 🚀 SOLUCIÓN AL ERROR DE PANDAS: Limpieza de encabezados
-                # 1. Eliminar columnas que estén completamente vacías o sin título
+                # Limpieza de encabezados
                 df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
-                # 2. Eliminar columnas duplicadas por si alguien repitió un título
                 df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
                 
+                # Inyectar Asesor y Agencia dinámicamente
                 df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
+                agencia = "CRA TULTITLAN" if nombre in VENDEDORES_TULTITLAN else "CRA CUAUTITLAN"
+                df_temporal.insert(1, 'AGENCIA', agencia)
+                
                 lista_dfs.append(df_temporal)
                 
         except Exception as e:
@@ -56,46 +93,74 @@ def cargar_cartera_global():
         df_global = pd.concat(lista_dfs, ignore_index=True)
         if 'FECHA SOLICITUD' in df_global.columns:
             df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
+            
+            # --- MOTOR DE FECHAS (Extrae el MES/AÑO para los filtros) ---
+            df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
+            df_global['MES'] = df_global['FECHA_DATETIME'].dt.strftime('%Y-%m') # Crea el formato: 2026-08
+            df_global['MES'] = df_global['MES'].fillna('SIN FECHA')
+            
         return df_global
     else:
         return pd.DataFrame()
 
-df = cargar_cartera_global()
+with st.spinner("Descargando bases de datos (esto solo tomará tiempo al iniciar sesión)..."):
+    df = cargar_cartera_global()
 
 if df.empty:
     st.error("No se extrajo ningún dato. Verifica las bases de los vendedores.")
     st.stop()
 
-# --- FILTROS LATERALES ---
-st.sidebar.header("Filtros")
-asesor_filtro = st.sidebar.multiselect("Asesor", options=df["ASESOR ASIGNADO"].unique(), default=df["ASESOR ASIGNADO"].unique())
+# =========================================================================
+# 3. FILTROS EN CASCADA
+# =========================================================================
+st.sidebar.header("Filtros del Tablero")
 
-if "PLATAFORMA" in df.columns:
-    plataforma_filtro = st.sidebar.multiselect("Plataforma", options=df["PLATAFORMA"].unique(), default=df["PLATAFORMA"].unique())
-    df_filtrado = df[(df["ASESOR ASIGNADO"].isin(asesor_filtro)) & (df["PLATAFORMA"].isin(plataforma_filtro))]
+# Botón manual para limpiar caché si se requiere ver leads que acaban de caer
+if st.sidebar.button("🔄 Actualizar Leads Nuevos", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.markdown("---")
+
+# 1. Filtro de Agencia Principal
+agencia_seleccionada = st.sidebar.selectbox("SELECCIONA AGENCIA", ["AMBAS SUCURSALES", "CRA CUAUTITLAN", "CRA TULTITLAN"])
+
+if agencia_seleccionada != "AMBAS SUCURSALES":
+    df_agencia = df[df["AGENCIA"] == agencia_seleccionada]
 else:
-    df_filtrado = df[df["ASESOR ASIGNADO"].isin(asesor_filtro)]
+    df_agencia = df
 
-# --- KPIs PRINCIPALES ---
+# 2. Filtro de Mes (Se nutre automáticamente de la agencia seleccionada)
+meses_disponibles = sorted(df_agencia["MES"].unique(), reverse=True)
+mes_filtro = st.sidebar.multiselect("Mes de Solicitud (Año-Mes)", options=meses_disponibles, default=meses_disponibles)
+
+# 3. Filtro de Asesor (Muestra solo a los asesores de la agencia elegida)
+asesores_disponibles = sorted(df_agencia["ASESOR ASIGNADO"].unique())
+asesor_filtro = st.sidebar.multiselect("Asesor", options=asesores_disponibles, default=asesores_disponibles)
+
+# Matriz final de aplicación de filtros
+df_filtrado = df_agencia[(df_agencia["ASESOR ASIGNADO"].isin(asesor_filtro)) & (df_agencia["MES"].isin(mes_filtro))]
+
+# =========================================================================
+# 4. MÓDULOS DEL TABLERO BI
+# =========================================================================
 col1, col2, col3, col4 = st.columns(4)
 total_leads = len(df_filtrado)
 
 leads_interes = 0
 ventas_cerradas = 0
 
-# Ajustado a tus opciones reales de la columna ESTATUS
 if "ESTATUS" in df_filtrado.columns:
     leads_interes = len(df_filtrado[df_filtrado["ESTATUS"] == "EN PROCESO DE TRATO"])
     ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS"] == "VENTA EXITOSA"])
 
-col1.metric("Total Leads Asignados", total_leads)
+col1.metric("Total Leads Filtrados", total_leads)
 col2.metric("Prospectos con Interés", leads_interes)
 col3.metric("Ventas Cerradas", ventas_cerradas)
 col4.metric("Tasa de Cierre", f"{(ventas_cerradas / total_leads * 100):.1f}%" if total_leads > 0 else "0%")
 
 st.markdown("---")
 
-# --- GRÁFICOS BI ---
 row1_col1, row1_col2 = st.columns(2)
 
 with row1_col1:
@@ -116,7 +181,7 @@ with row1_col2:
         st.info("Columna ESTATUS no encontrada en la base.")
 
 st.subheader("Detalle de Cartera Activa")
-columnas_mostrar = ['ASESOR ASIGNADO']
+columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO']
 for col in ['FECHA SOLICITUD', 'ANUNCIO', 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTARIO ASESOR']:
     if col in df_filtrado.columns:
         columnas_mostrar.append(col)
