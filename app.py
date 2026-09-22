@@ -86,27 +86,30 @@ def cargar_cartera_global():
     
     if lista_dfs:
         df_global = pd.concat(lista_dfs, ignore_index=True)
+        
         if 'FECHA SOLICITUD' in df_global.columns:
-            df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
+            # 1. Eliminar filas vacías o con puros espacios
+            df_global = df_global[df_global['FECHA SOLICITUD'].astype(str).str.strip() != ""]
             
-            # --- LIMPIEZA DE ESTATUS VACÍOS ---
+            # 2. LIMPIEZA DE ESTATUS VACÍOS
             if 'ESTATUS' in df_global.columns:
                 df_global['ESTATUS'] = df_global['ESTATUS'].replace("", "PROSPECTO SIN ATENDER")
             
-            # --- MOTOR DE FECHAS PARA LOS FILTROS ---
+            # 3. MOTOR DE FECHAS (Forzar a datetime)
             df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
             
-            # Extraer AÑO
-            df_global['AÑO'] = df_global['FECHA_DATETIME'].dt.year.fillna(0).astype(int).astype(str)
-            df_global['AÑO'] = df_global['AÑO'].replace('0', 'SIN FECHA')
+            # 🚀 FILTRO DESTRUCTOR: Eliminar cualquier fila que no haya arrojado una fecha válida
+            df_global = df_global.dropna(subset=['FECHA_DATETIME'])
+            
+            # Extraer AÑO (Garantizado que es un número válido)
+            df_global['AÑO'] = df_global['FECHA_DATETIME'].dt.year.astype(int).astype(str)
             
             # Extraer MES en número y texto
-            df_global['MES_NUM'] = df_global['FECHA_DATETIME'].dt.month.fillna(0).astype(int)
+            df_global['MES_NUM'] = df_global['FECHA_DATETIME'].dt.month.astype(int)
             meses_map = {
                 1: 'ENERO', 2: 'FEBRERO', 3: 'MARZO', 4: 'ABRIL',
                 5: 'MAYO', 6: 'JUNIO', 7: 'JULIO', 8: 'AGOSTO',
-                9: 'SEPTIEMBRE', 10: 'OCTUBRE', 11: 'NOVIEMBRE', 12: 'DICIEMBRE',
-                0: 'SIN FECHA'
+                9: 'SEPTIEMBRE', 10: 'OCTUBRE', 11: 'NOVIEMBRE', 12: 'DICIEMBRE'
             }
             df_global['MES'] = df_global['MES_NUM'].map(meses_map)
             
@@ -139,9 +142,7 @@ with st.sidebar.expander("🏢 SELECCIONA AGENCIA", expanded=False):
 df_agencia = df[df["AGENCIA"].isin(agencias_seleccionadas)]
 
 with st.sidebar.expander("📅 SELECCIONA AÑO", expanded=False):
-    anios_disp = sorted([a for a in df_agencia["AÑO"].unique() if a != 'SIN FECHA'], reverse=True)
-    if 'SIN FECHA' in df_agencia["AÑO"].unique():
-        anios_disp.append('SIN FECHA')
+    anios_disp = sorted(df_agencia["AÑO"].unique(), reverse=True)
     anios_seleccionados = [a for a in anios_disp if st.checkbox(str(a), value=True, key=f"ano_{a}")]
 
 df_ano = df_agencia[df_agencia["AÑO"].isin(anios_seleccionados)]
@@ -232,23 +233,20 @@ with tab_asesor:
     st.markdown("---")
     
     # ---------------------------------------------------------
-    # NUEVO MÓDULO: RANKING JERÁRQUICO DE ATENCIÓN
+    # MÓDULO: RANKING JERÁRQUICO DE ATENCIÓN
     # ---------------------------------------------------------
     st.subheader("🏆 Ranking: Nivel de Atención por Asesor")
     st.caption("Mide el porcentaje de prospectos que ya cuentan con un seguimiento capturado por el vendedor.")
     
     if total_leads > 0 and "COMENTARIO ASESOR" in df_filtrado.columns:
-        # Calcular Asignados vs Atendidos
         df_ranking = df_filtrado.groupby('ASESOR ASIGNADO').agg(
             LEADS_ASIGNADOS=('FECHA SOLICITUD', 'count'),
             LEADS_ATENDIDOS=('COMENTARIO ASESOR', lambda x: (x.astype(str).str.strip() != "").sum())
         ).reset_index()
         
-        # Calcular Fórmula
         df_ranking['NIVEL DE ATENCION (%)'] = (df_ranking['LEADS_ATENDIDOS'] / df_ranking['LEADS_ASIGNADOS']) * 100
         df_ranking = df_ranking.sort_values(by='NIVEL DE ATENCION (%)', ascending=False)
         
-        # Función para pintar el semáforo
         def color_semaforo(val):
             if val == 100:
                 return 'background-color: #d9ead3; color: #274e13; font-weight: bold;' # Verde
@@ -257,7 +255,6 @@ with tab_asesor:
             else:
                 return 'background-color: #f4cccc; color: #990000; font-weight: bold;' # Rojo
 
-        # Mostrar tabla estilizada
         st.dataframe(
             df_ranking.style.map(color_semaforo, subset=['NIVEL DE ATENCION (%)']).format({'NIVEL DE ATENCION (%)': '{:.1f}%'}),
             use_container_width=True,
@@ -267,7 +264,6 @@ with tab_asesor:
     st.markdown("---")
     st.subheader("Auditoría: Desglose de Cartera")
     
-    # Definir las columnas base que se mostrarán en todas las tablas
     columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD']
     col_unidad_real = col_unidad if 'col_unidad' in locals() else 'UNIDAD INTERES'
     
@@ -280,7 +276,6 @@ with tab_asesor:
     # ---------------------------------------------------------
     if total_leads > 0 and "COMENTARIO ASESOR" in df_filtrado.columns:
         
-        # Filtros de condiciones
         condicion_comentario_lleno = df_filtrado["COMENTARIO ASESOR"].astype(str).str.strip() != ""
         condicion_comentario_vacio = df_filtrado["COMENTARIO ASESOR"].astype(str).str.strip() == ""
         
@@ -288,17 +283,14 @@ with tab_asesor:
         df_sin_atender = df_filtrado[condicion_comentario_vacio]
         df_perdida = df_filtrado[condicion_comentario_lleno & (df_filtrado["ESTATUS"] == "YA NO TIENE INTERÉS")]
 
-        # Tabla 1
         st.markdown("##### 🟢 Detalle de Cartera Activa")
         st.caption("Prospectos que ya fueron atendidos (tienen comentario) y se mantienen en trato o se cerró la venta.")
         st.dataframe(df_activa[columnas_mostrar], use_container_width=True, hide_index=True)
 
-        # Tabla 2
         st.markdown("##### 🔴 Cartera Sin Atender")
         st.caption("Prospectos que cayeron a la base pero el vendedor AÚN NO captura ningún comentario.")
         st.dataframe(df_sin_atender[columnas_mostrar], use_container_width=True, hide_index=True)
 
-        # Tabla 3
         st.markdown("##### 🟠 Cartera Perdida")
         st.caption("Prospectos descartados tras la atención del vendedor.")
         st.dataframe(df_perdida[columnas_mostrar], use_container_width=True, hide_index=True)
