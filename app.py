@@ -65,9 +65,13 @@ def cargar_cartera_global():
             hoja = client.open_by_key(id_archivo).sheet1
             datos = hoja.get_all_values()
             
-            if len(datos) > 7:
-                # Tomar la fila 7 (índice 6) como encabezados
-                df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
+            # 🚀 CORRECCIÓN: Los encabezados ahora están en la fila 8 (índice 7)
+            if len(datos) > 8:
+                # Limpiamos los títulos de espacios vacíos invisibles por seguridad
+                titulos = [str(col).strip() for col in datos[7]]
+                
+                # Los datos reales empiezan en la fila 9 (índice 8)
+                df_temporal = pd.DataFrame(datos[8:], columns=titulos)
                 
                 df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
                 df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
@@ -88,7 +92,7 @@ def cargar_cartera_global():
     if lista_dfs:
         df_global = pd.concat(lista_dfs, ignore_index=True)
         
-        # Validar usando el nuevo nombre de la columna (O su posición si se conservó)
+        # Validar usando la columna limpia
         if 'FECHA SOLICITUD' in df_global.columns:
             # 1. Eliminar filas vacías o con puros espacios
             df_global = df_global[df_global['FECHA SOLICITUD'].astype(str).str.strip() != ""]
@@ -100,7 +104,7 @@ def cargar_cartera_global():
             # 3. MOTOR DE FECHAS (Forzar a datetime)
             df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
             
-            # 🚀 FILTRO DESTRUCTOR: Eliminar cualquier fila que no haya arrojado una fecha válida
+            # FILTRO DESTRUCTOR: Eliminar cualquier fila que no haya arrojado una fecha válida
             df_global = df_global.dropna(subset=['FECHA_DATETIME'])
             
             # Extraer AÑO (Garantizado que es un número válido)
@@ -114,6 +118,11 @@ def cargar_cartera_global():
                 9: 'SEPTIEMBRE', 10: 'OCTUBRE', 11: 'NOVIEMBRE', 12: 'DICIEMBRE'
             }
             df_global['MES'] = df_global['MES_NUM'].map(meses_map)
+            
+        else:
+            # Si por alguna razón no encuentra la columna, detenemos la app con un error claro
+            st.error("No se encontró la columna 'FECHA SOLICITUD'. Verifica que los títulos estén exactamente en la Fila 8 del Excel.")
+            st.stop()
             
         return df_global
     else:
@@ -174,7 +183,6 @@ with tab_general:
     col1, col2, col3, col4 = st.columns(4)
     total_leads = len(df_filtrado)
     
-    # Adaptado a la nueva columna ESTATUS PROSPECTO
     if "ESTATUS PROSPECTO" in df_filtrado.columns:
         leads_interes = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["SEGUIMIENTO", "COTIZADO", "FINANCIAMIENTO"])])
         ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["FACTURADO", "CIERRE DE VENTA"])])
@@ -275,7 +283,6 @@ with tab_asesor:
     st.markdown("---")
     st.subheader("Auditoría: Desglose de Cartera")
     
-    # Nueva estructura de columnas de auditoría
     columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD', 'NOMBRE CLIENTE']
     
     for col in ['PRIMER FILTRO', 'UNIDAD REAL DE INTERES', 'ESTATUS PROSPECTO', 'DIAS TRANSCURRIDOS SIN SEGUIMIENTO']:
@@ -287,7 +294,6 @@ with tab_asesor:
     # ---------------------------------------------------------
     if total_leads > 0 and "PRIMER FILTRO" in df_filtrado.columns and "ESTATUS PROSPECTO" in df_filtrado.columns:
         
-        # Identificamos si el vendedor ya interactuó usando la nueva columna "PRIMER FILTRO"
         condicion_atendido = df_filtrado["PRIMER FILTRO"].astype(str).str.strip() != ""
         condicion_vacio = df_filtrado["PRIMER FILTRO"].astype(str).str.strip() == ""
         
