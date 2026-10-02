@@ -221,7 +221,7 @@ with tab_general:
 # PESTAÑA 2: ASESOR
 # ---------------------------------------------------------
 with tab_asesor:
-    st.subheader("Nivel de Atención y Seguimiento por Asesor")
+    st.subheader("Nivel de Atención y Seguimiento por Asesor dado leads activos")
     
     if total_leads > 0 and "ESTATUS PROSPECTO" in df_filtrado.columns:
         rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS PROSPECTO']).size().reset_index(name='CANTIDAD')
