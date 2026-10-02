@@ -65,12 +65,9 @@ def cargar_cartera_global():
             hoja = client.open_by_key(id_archivo).sheet1
             datos = hoja.get_all_values()
             
-            # 🚀 CORRECCIÓN: Los encabezados ahora están en la fila 8 (índice 7)
             if len(datos) > 8:
-                # Limpiamos los títulos de espacios vacíos invisibles por seguridad
                 titulos = [str(col).strip() for col in datos[7]]
                 
-                # Los datos reales empiezan en la fila 9 (índice 8)
                 df_temporal = pd.DataFrame(datos[8:], columns=titulos)
                 
                 df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
@@ -92,7 +89,6 @@ def cargar_cartera_global():
     if lista_dfs:
         df_global = pd.concat(lista_dfs, ignore_index=True)
         
-        # Validar usando la columna limpia
         if 'FECHA SOLICITUD' in df_global.columns:
             # 1. Eliminar filas vacías o con puros espacios
             df_global = df_global[df_global['FECHA SOLICITUD'].astype(str).str.strip() != ""]
@@ -120,7 +116,6 @@ def cargar_cartera_global():
             df_global['MES'] = df_global['MES_NUM'].map(meses_map)
             
         else:
-            # Si por alguna razón no encuentra la columna, detenemos la app con un error claro
             st.error("No se encontró la columna 'FECHA SOLICITUD'. Verifica que los títulos estén exactamente en la Fila 8 del Excel.")
             st.stop()
             
@@ -212,9 +207,10 @@ with tab_general:
                 st.plotly_chart(fig_ad, use_container_width=True)
 
         st.subheader("Crecimiento de Demanda por Unidad de Interés")
-        col_unidad = "UNIDAD REAL DE INTERES" if "UNIDAD REAL DE INTERES" in df_filtrado.columns else "UNIDAD DE INTERES"
-        if col_unidad in df_filtrado.columns:
-            fig_unidad = px.histogram(df_filtrado, x='MES', color=col_unidad, barmode='stack',
+        
+        # 🚀 CORRECCIÓN: Ahora lee estrictamente la unidad original (Demanda de Marketing)
+        if "UNIDAD DE INTERES" in df_filtrado.columns:
+            fig_unidad = px.histogram(df_filtrado, x='MES', color="UNIDAD DE INTERES", barmode='stack',
                                       color_discrete_sequence=px.colors.qualitative.Bold)
             fig_unidad.update_layout(xaxis_title="Mes", yaxis_title="Cotizaciones / Interés")
             st.plotly_chart(fig_unidad, use_container_width=True)
@@ -259,7 +255,6 @@ with tab_asesor:
     if total_leads > 0 and "PRIMER FILTRO" in df_filtrado.columns:
         df_ranking = df_filtrado.groupby('ASESOR ASIGNADO').agg(
             LEADS_ASIGNADOS=('FECHA SOLICITUD', 'count'),
-            # Atendido = Que haya seleccionado algo en "PRIMER FILTRO"
             LEADS_ATENDIDOS=('PRIMER FILTRO', lambda x: (x.astype(str).str.strip() != "").sum())
         ).reset_index()
         
