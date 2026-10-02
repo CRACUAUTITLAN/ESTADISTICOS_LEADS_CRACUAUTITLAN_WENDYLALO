@@ -66,6 +66,7 @@ def cargar_cartera_global():
             datos = hoja.get_all_values()
             
             if len(datos) > 7:
+                # Tomar la fila 7 (índice 6) como encabezados
                 df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
                 
                 df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
@@ -87,13 +88,14 @@ def cargar_cartera_global():
     if lista_dfs:
         df_global = pd.concat(lista_dfs, ignore_index=True)
         
+        # Validar usando el nuevo nombre de la columna (O su posición si se conservó)
         if 'FECHA SOLICITUD' in df_global.columns:
             # 1. Eliminar filas vacías o con puros espacios
             df_global = df_global[df_global['FECHA SOLICITUD'].astype(str).str.strip() != ""]
             
-            # 2. LIMPIEZA DE ESTATUS VACÍOS
-            if 'ESTATUS' in df_global.columns:
-                df_global['ESTATUS'] = df_global['ESTATUS'].replace("", "PROSPECTO SIN ATENDER")
+            # 2. LIMPIEZA DE ESTATUS VACÍOS EN LA NUEVA COLUMNA
+            if 'ESTATUS PROSPECTO' in df_global.columns:
+                df_global['ESTATUS PROSPECTO'] = df_global['ESTATUS PROSPECTO'].replace("", "PROSPECTO SIN ATENDER")
             
             # 3. MOTOR DE FECHAS (Forzar a datetime)
             df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
@@ -171,11 +173,16 @@ tab_general, tab_asesor = st.tabs(["📊 GENERAL (Marketing & Demanda)", "🧑�
 with tab_general:
     col1, col2, col3, col4 = st.columns(4)
     total_leads = len(df_filtrado)
-    leads_interes = len(df_filtrado[df_filtrado["ESTATUS"] == "EN PROCESO DE TRATO"]) if "ESTATUS" in df_filtrado.columns else 0
-    ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS"] == "VENTA EXITOSA"]) if "ESTATUS" in df_filtrado.columns else 0
+    
+    # Adaptado a la nueva columna ESTATUS PROSPECTO
+    if "ESTATUS PROSPECTO" in df_filtrado.columns:
+        leads_interes = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["SEGUIMIENTO", "COTIZADO", "FINANCIAMIENTO"])])
+        ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["FACTURADO", "CIERRE DE VENTA"])])
+    else:
+        leads_interes, ventas_cerradas = 0, 0
 
     col1.metric("Total Leads Filtrados", total_leads)
-    col2.metric("Prospectos con Interés", leads_interes)
+    col2.metric("Prospectos Activos", leads_interes)
     col3.metric("Ventas Cerradas", ventas_cerradas)
     col4.metric("Tasa de Cierre", f"{(ventas_cerradas / total_leads * 100):.1f}%" if total_leads > 0 else "0%")
     st.markdown("---")
@@ -197,7 +204,7 @@ with tab_general:
                 st.plotly_chart(fig_ad, use_container_width=True)
 
         st.subheader("Crecimiento de Demanda por Unidad de Interés")
-        col_unidad = "UNIDAD DE INTERES" if "UNIDAD DE INTERES" in df_filtrado.columns else "UNIDAD INTERES"
+        col_unidad = "UNIDAD REAL DE INTERES" if "UNIDAD REAL DE INTERES" in df_filtrado.columns else "UNIDAD DE INTERES"
         if col_unidad in df_filtrado.columns:
             fig_unidad = px.histogram(df_filtrado, x='MES', color=col_unidad, barmode='stack',
                                       color_discrete_sequence=px.colors.qualitative.Bold)
@@ -212,18 +219,21 @@ with tab_general:
 with tab_asesor:
     st.subheader("Nivel de Atención y Seguimiento por Asesor")
     
-    if total_leads > 0 and "ESTATUS" in df_filtrado.columns:
-        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS']).size().reset_index(name='CANTIDAD')
+    if total_leads > 0 and "ESTATUS PROSPECTO" in df_filtrado.columns:
+        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS PROSPECTO']).size().reset_index(name='CANTIDAD')
         
         mapa_colores = {
             "PROSPECTO SIN ATENDER": "#ff4b4b", # Rojo Alerta
-            "EN PROCESO DE TRATO": "#3b82f6",   # Azul
-            "VENTA EXITOSA": "#22c55e",         # Verde
-            "YA NO TIENE INTERÉS": "#f97316",   # Naranja
-            "ERROR DE CAPTURA": "#64748b"       # Gris
+            "SEGUIMIENTO": "#3b82f6",           # Azul
+            "COTIZADO": "#818cf8",              # Azul claro
+            "FINANCIAMIENTO": "#facc15",        # Amarillo
+            "FACTURADO": "#22c55e",             # Verde oscuro
+            "CIERRE DE VENTA": "#4ade80",       # Verde claro
+            "VENTA PERDIDA": "#f97316",         # Naranja
+            "COMPRA CANCELADA": "#ef4444"       # Rojo
         }
         
-        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS', barmode='stack',
+        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS PROSPECTO', barmode='stack',
                             color_discrete_map=mapa_colores)
         fig_asesor.update_layout(xaxis_title="", yaxis_title="Leads Asignados")
         st.plotly_chart(fig_asesor, use_container_width=True)
@@ -236,12 +246,13 @@ with tab_asesor:
     # MÓDULO: RANKING JERÁRQUICO DE ATENCIÓN
     # ---------------------------------------------------------
     st.subheader("🏆 Ranking: Nivel de Atención por Asesor")
-    st.caption("Mide el porcentaje de prospectos que ya cuentan con un seguimiento capturado por el vendedor.")
+    st.caption("Mide el porcentaje de prospectos que ya cuentan con un PRIMER FILTRO capturado por el vendedor.")
     
-    if total_leads > 0 and "COMENTARIO ASESOR" in df_filtrado.columns:
+    if total_leads > 0 and "PRIMER FILTRO" in df_filtrado.columns:
         df_ranking = df_filtrado.groupby('ASESOR ASIGNADO').agg(
             LEADS_ASIGNADOS=('FECHA SOLICITUD', 'count'),
-            LEADS_ATENDIDOS=('COMENTARIO ASESOR', lambda x: (x.astype(str).str.strip() != "").sum())
+            # Atendido = Que haya seleccionado algo en "PRIMER FILTRO"
+            LEADS_ATENDIDOS=('PRIMER FILTRO', lambda x: (x.astype(str).str.strip() != "").sum())
         ).reset_index()
         
         df_ranking['NIVEL DE ATENCION (%)'] = (df_ranking['LEADS_ATENDIDOS'] / df_ranking['LEADS_ASIGNADOS']) * 100
@@ -264,33 +275,37 @@ with tab_asesor:
     st.markdown("---")
     st.subheader("Auditoría: Desglose de Cartera")
     
-    columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD']
-    col_unidad_real = col_unidad if 'col_unidad' in locals() else 'UNIDAD INTERES'
+    # Nueva estructura de columnas de auditoría
+    columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD', 'NOMBRE CLIENTE']
     
-    for col in ['ANUNCIO', col_unidad_real, 'NOMBRE CLIENTE', 'ESTATUS', 'COMENTARIO ASESOR']:
+    for col in ['PRIMER FILTRO', 'UNIDAD REAL DE INTERES', 'ESTATUS PROSPECTO', 'DIAS TRANSCURRIDOS SIN SEGUIMIENTO']:
         if col in df_filtrado.columns:
             columnas_mostrar.append(col)
 
     # ---------------------------------------------------------
     # TABLAS DE DESGLOSE (Activa, Sin Atender, Perdida)
     # ---------------------------------------------------------
-    if total_leads > 0 and "COMENTARIO ASESOR" in df_filtrado.columns:
+    if total_leads > 0 and "PRIMER FILTRO" in df_filtrado.columns and "ESTATUS PROSPECTO" in df_filtrado.columns:
         
-        condicion_comentario_lleno = df_filtrado["COMENTARIO ASESOR"].astype(str).str.strip() != ""
-        condicion_comentario_vacio = df_filtrado["COMENTARIO ASESOR"].astype(str).str.strip() == ""
+        # Identificamos si el vendedor ya interactuó usando la nueva columna "PRIMER FILTRO"
+        condicion_atendido = df_filtrado["PRIMER FILTRO"].astype(str).str.strip() != ""
+        condicion_vacio = df_filtrado["PRIMER FILTRO"].astype(str).str.strip() == ""
         
-        df_activa = df_filtrado[condicion_comentario_lleno & (df_filtrado["ESTATUS"].isin(["EN PROCESO DE TRATO", "VENTA EXITOSA"]))]
-        df_sin_atender = df_filtrado[condicion_comentario_vacio]
-        df_perdida = df_filtrado[condicion_comentario_lleno & (df_filtrado["ESTATUS"] == "YA NO TIENE INTERÉS")]
+        estatus_activos = ["SEGUIMIENTO", "COTIZADO", "FINANCIAMIENTO", "FACTURADO", "CIERRE DE VENTA"]
+        estatus_perdidos = ["VENTA PERDIDA", "COMPRA CANCELADA"]
+        
+        df_activa = df_filtrado[condicion_atendido & (df_filtrado["ESTATUS PROSPECTO"].isin(estatus_activos))]
+        df_sin_atender = df_filtrado[condicion_vacio]
+        df_perdida = df_filtrado[condicion_atendido & (df_filtrado["ESTATUS PROSPECTO"].isin(estatus_perdidos))]
 
         st.markdown("##### 🟢 Detalle de Cartera Activa")
-        st.caption("Prospectos que ya fueron atendidos (tienen comentario) y se mantienen en trato o se cerró la venta.")
+        st.caption("Prospectos que ya pasaron el Primer Filtro y están en fase de cotización, financiamiento o cierre.")
         st.dataframe(df_activa[columnas_mostrar], use_container_width=True, hide_index=True)
 
         st.markdown("##### 🔴 Cartera Sin Atender")
-        st.caption("Prospectos que cayeron a la base pero el vendedor AÚN NO captura ningún comentario.")
+        st.caption("Prospectos nuevos que AÚN NO tienen captura en 'Primer Filtro'.")
         st.dataframe(df_sin_atender[columnas_mostrar], use_container_width=True, hide_index=True)
 
         st.markdown("##### 🟠 Cartera Perdida")
-        st.caption("Prospectos descartados tras la atención del vendedor.")
+        st.caption("Prospectos descartados (Compra cancelada o Venta perdida).")
         st.dataframe(df_perdida[columnas_mostrar], use_container_width=True, hide_index=True)
