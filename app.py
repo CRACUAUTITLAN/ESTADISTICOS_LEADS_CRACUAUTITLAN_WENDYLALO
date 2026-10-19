@@ -65,17 +65,33 @@ def cargar_cartera_global():
             hoja = client.open_by_key(id_archivo).sheet1
             datos = hoja.get_all_values()
             
-            if len(datos) > 7:
-                df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
+            # 🚀 BUSCADOR DINÁMICO DE ENCABEZADOS (A PRUEBA DE BALAS)
+            titulos_encontrados = False
+            for i, fila in enumerate(datos[:15]): # Escanea las primeras 15 filas
+                # Normaliza: todo a mayúsculas y quita espacios extra accidentales
+                fila_limpia = [str(celda).strip().upper() for celda in fila]
                 
-                df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
-                df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
-                
-                df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
-                agencia = "CRA TULTITLAN" if nombre in VENDEDORES_TULTITLAN else "CRA CUAUTITLAN"
-                df_temporal.insert(1, 'AGENCIA', agencia)
-                
-                lista_dfs.append(df_temporal)
+                # Si encuentra nuestra columna clave, asume que esa fila son los títulos
+                if "FECHA SOLICITUD" in fila_limpia:
+                    titulos = fila_limpia
+                    datos_reales = datos[i+1:] # Los datos empiezan una fila debajo de los títulos
+                    
+                    df_temporal = pd.DataFrame(datos_reales, columns=titulos)
+                    
+                    # Limpieza de columnas
+                    df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
+                    df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
+                    
+                    df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
+                    agencia = "CRA TULTITLAN" if nombre in VENDEDORES_TULTITLAN else "CRA CUAUTITLAN"
+                    df_temporal.insert(1, 'AGENCIA', agencia)
+                    
+                    lista_dfs.append(df_temporal)
+                    titulos_encontrados = True
+                    break # Termina de buscar en esta hoja y pasa al siguiente vendedor
+            
+            if not titulos_encontrados:
+                st.warning(f"⚠️ No se encontró la columna 'FECHA SOLICITUD' en la hoja de {nombre}. Revisa su archivo.")
                 
         except Exception as e:
             st.warning(f"Error al leer {nombre} -> {repr(e)}")
@@ -91,7 +107,7 @@ def cargar_cartera_global():
             # 1. Eliminar filas vacías o con puros espacios
             df_global = df_global[df_global['FECHA SOLICITUD'].astype(str).str.strip() != ""]
             
-            # 🚀 2. MOTOR NUEVO: ESTATUS PARA LA GRÁFICA (A = ANUNCIO, L = PRIMER FILTRO, Q = ESTATUS PROSPECTO)
+            # 2. MOTOR NUEVO: ESTATUS PARA LA GRÁFICA (A = ANUNCIO, L = PRIMER FILTRO, Q = ESTATUS PROSPECTO)
             if set(['ANUNCIO', 'PRIMER FILTRO', 'ESTATUS PROSPECTO']).issubset(df_global.columns):
                 def regla_atencion_grafica(row):
                     val_a = str(row['ANUNCIO']).strip()
@@ -135,7 +151,7 @@ def cargar_cartera_global():
             df_global['MES'] = df_global['MES_NUM'].map(meses_map)
             
         else:
-            st.error("No se encontró la columna 'FECHA SOLICITUD'. Verifica que los títulos estén exactamente en la Fila 8 del Excel.")
+            st.error("Error crítico de lectura. Verifica los archivos de los asesores.")
             st.stop()
             
         return df_global
@@ -242,26 +258,24 @@ with tab_asesor:
     st.subheader("Nivel de Atención y Seguimiento por Asesor dado leads activos")
     
     if total_leads > 0 and "ESTATUS_GRAFICO" in df_filtrado.columns:
-        # Filtramos para graficar únicamente aquellos con estatus válido
         df_grafico = df_filtrado[df_filtrado["ESTATUS_GRAFICO"] != ""]
         
         if not df_grafico.empty:
             rendimiento = df_grafico.groupby(['ASESOR ASIGNADO', 'ESTATUS_GRAFICO']).size().reset_index(name='CANTIDAD')
             
-            # Catálogo de colores mezclando Opciones de Columna L y Q
             mapa_colores_grafico = {
-                "SIN ATENDER": "#ff4b4b",               # Rojo Alerta (Si Columna A llena, pero L vacía)
-                "PROSPECTO CON INTERES": "#60a5fa",     # Azul claro (Primer Filtro L)
-                "ERROR DE CAPTURA": "#94a3b8",          # Gris (Primer Filtro L)
-                "YA NO TIENE INTERES": "#f97316",       # Naranja (Primer Filtro L)
-                "SIN ÉXITO DE CONTACTO": "#facc15",     # Amarillo (Primer Filtro L)
-                "SEGUIMIENTO": "#3b82f6",               # Azul (Estatus Q)
-                "COTIZADO": "#818cf8",                  # Azul claro (Estatus Q)
-                "FINANCIAMIENTO": "#eab308",            # Amarillo oscuro (Estatus Q)
-                "FACTURADO": "#22c55e",                 # Verde oscuro (Estatus Q)
-                "CIERRE DE VENTA": "#4ade80",           # Verde claro (Estatus Q)
-                "VENTA PERDIDA": "#ea580c",             # Naranja oscuro (Estatus Q)
-                "COMPRA CANCELADA": "#ef4444"           # Rojo (Estatus Q)
+                "SIN ATENDER": "#ff4b4b",               # Rojo Alerta
+                "PROSPECTO CON INTERES": "#60a5fa",     # Azul claro 
+                "ERROR DE CAPTURA": "#94a3b8",          # Gris 
+                "YA NO TIENE INTERES": "#f97316",       # Naranja 
+                "SIN ÉXITO DE CONTACTO": "#facc15",     # Amarillo 
+                "SEGUIMIENTO": "#3b82f6",               # Azul
+                "COTIZADO": "#818cf8",                  # Azul claro
+                "FINANCIAMIENTO": "#eab308",            # Amarillo oscuro 
+                "FACTURADO": "#22c55e",                 # Verde oscuro 
+                "CIERRE DE VENTA": "#4ade80",           # Verde claro 
+                "VENTA PERDIDA": "#ea580c",             # Naranja oscuro 
+                "COMPRA CANCELADA": "#ef4444"           # Rojo 
             }
             
             fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS_GRAFICO', barmode='stack',
@@ -269,7 +283,7 @@ with tab_asesor:
             fig_asesor.update_layout(xaxis_title="", yaxis_title="Leads Asignados", legend_title="Estatus de Atención")
             st.plotly_chart(fig_asesor, use_container_width=True)
         else:
-            st.warning("No hay leads válidos (Columna A vacía) para graficar en este periodo.")
+            st.warning("No hay leads válidos para graficar en este periodo.")
     elif total_leads == 0:
         st.warning("Ajusta los filtros para ver el rendimiento.")
 
