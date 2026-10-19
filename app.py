@@ -32,7 +32,7 @@ if not st.session_state["autenticado"]:
     st.stop() 
 
 # =========================================================================
-# 2. CARGA DE DATOS Y EXTRACCIÓN DE FECHAS
+# 2. CARGA DE DATOS Y ESTRUCTURA FIJA DE 21 COLUMNAS (A - U)
 # =========================================================================
 st.title("📊 Panel de Inteligencia Comercial y Leads")
 
@@ -52,6 +52,31 @@ DICCIONARIO_VENDEDORES = {
     "HILDA": "1ObtW2sRdgGvyotTOvl0lEM4erASM4KyWvj1uoyOKiPk"
 }
 
+# Orden oficial fijo de las 21 columnas (Columna A hasta Columna U)
+COLUMNAS_OFICIALES = [
+    "ANUNCIO",                               # Col A (0)
+    "PLATAFORMA",                            # Col B (1)
+    "UNIDAD DE INTERES",                     # Col C (2)
+    "NOMBRE CLIENTE",                        # Col D (3)
+    "TELEFONO CLIENTE",                      # Col E (4)
+    "CORREO CLIENTE",                        # Col F (5)
+    "COMENTARIO CLIENTE",                    # Col G (6)
+    "FECHA SOLICITUD",                       # Col H (7)
+    "HORA SOLICITUD",                        # Col I (8)
+    "FECHA PRIMER CONTACTO",                 # Col J (9)
+    "HORA PRIMER CONTACTO",                  # Col K (10)
+    "PRIMER FILTRO",                         # Col L (11)
+    "UNIDAD REAL DE INTERES",                # Col M (12)
+    "COMENTARIO DE ACERCAMIENTO PROSPECTO",  # Col N (13)
+    "FECHA DE SEGUIMIENTO",                  # Col O (14)
+    "HORA DE SEGUIMIENTO",                   # Col P (15)
+    "ESTATUS PROSPECTO",                     # Col Q (16)
+    "ACTIVIDAD DE SEGUIMIENTO",              # Col R (17)
+    "COMENTARIO ASESOR",                     # Col S (18)
+    "FECHA LÍMITE PROXIMA ACTIVIDAD",        # Col T (19)
+    "DIAS TRANSCURRIDOS SIN SEGUIMIENTO"     # Col U (20)
+]
+
 @st.cache_data(show_spinner=False)
 def cargar_cartera_global():
     client = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
@@ -66,16 +91,28 @@ def cargar_cartera_global():
             datos = hoja.get_all_values()
             
             if len(datos) > 7:
-                df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
+                # Detectar dinámicamente en qué fila están los encabezados (por defecto fila 8 -> índice 7)
+                inicio_datos = 8
+                for i, fila in enumerate(datos[:15]):
+                    fila_limpia = [str(c).strip().upper() for c in fila]
+                    if "ANUNCIO" in fila_limpia or "FECHA SOLICITUD" in fila_limpia:
+                        inicio_datos = i + 1
+                        break
                 
-                df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
-                df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
-                
-                df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
-                agencia = "CRA TULTITLAN" if nombre in VENDEDORES_TULTITLAN else "CRA CUAUTITLAN"
-                df_temporal.insert(1, 'AGENCIA', agencia)
-                
-                lista_dfs.append(df_temporal)
+                filas_crudas = datos[inicio_datos:]
+                if filas_crudas:
+                    # Ajustar cada fila exactamente a las 21 columnas (A - U)
+                    filas_normalizadas = [
+                        (fila[:21] + [""] * max(0, 21 - len(fila)))
+                        for fila in filas_crudas
+                    ]
+                    
+                    df_temporal = pd.DataFrame(filas_normalizadas, columns=COLUMNAS_OFICIALES)
+                    df_temporal.insert(0, 'ASESOR ASIGNADO', nombre)
+                    agencia = "CRA TULTITLAN" if nombre in VENDEDORES_TULTITLAN else "CRA CUAUTITLAN"
+                    df_temporal.insert(1, 'AGENCIA', agencia)
+                    
+                    lista_dfs.append(df_temporal)
                 
         except Exception as e:
             st.warning(f"Error al leer {nombre} -> {repr(e)}")
@@ -87,57 +124,45 @@ def cargar_cartera_global():
     if lista_dfs:
         df_global = pd.concat(lista_dfs, ignore_index=True)
         
-        if 'FECHA SOLICITUD' in df_global.columns:
-            # 1. Eliminar filas vacías o con puros espacios
-            df_global = df_global[df_global['FECHA SOLICITUD'].astype(str).str.strip() != ""]
+        # 1. Filtrar únicamente filas que tengan Fecha de Solicitud
+        df_global['FECHA SOLICITUD'] = df_global['FECHA SOLICITUD'].astype(str).str.strip()
+        df_global = df_global[df_global['FECHA SOLICITUD'] != ""]
+        
+        # 2. REGLA DE CASCADA PARA EL GRÁFICO (Col A = ANUNCIO, Col L = PRIMER FILTRO, Col Q = ESTATUS PROSPECTO)
+        def regla_atencion_grafica(row):
+            val_a = str(row['ANUNCIO']).strip()
+            val_l = str(row['PRIMER FILTRO']).strip()
+            val_q = str(row['ESTATUS PROSPECTO']).strip()
             
-            # 🚀 2. MOTOR NUEVO: ESTATUS PARA LA GRÁFICA (A = ANUNCIO, L = PRIMER FILTRO, Q = ESTATUS PROSPECTO)
-            if set(['ANUNCIO', 'PRIMER FILTRO', 'ESTATUS PROSPECTO']).issubset(df_global.columns):
-                def regla_atencion_grafica(row):
-                    val_a = str(row['ANUNCIO']).strip()
-                    val_l = str(row['PRIMER FILTRO']).strip()
-                    val_q = str(row['ESTATUS PROSPECTO']).strip()
-                    
-                    if val_a != "":          # Si hay lead (Columna A llena)
-                        if val_l == "":      # Si L está vacía
-                            return "SIN ATENDER"
-                        else:                # Si L tiene algo
-                            if val_q != "":  # Y Q tiene algo
-                                return val_q
-                            else:            # Y Q NO tiene nada, dejamos lo de L
-                                return val_l
-                    return ""                # Si no hay lead (A vacía), no grafica nada
-                
-                df_global['ESTATUS_GRAFICO'] = df_global.apply(regla_atencion_grafica, axis=1)
-            else:
-                df_global['ESTATUS_GRAFICO'] = ""
-            
-            # 3. LIMPIEZA DE ESTATUS VACÍOS EN LA COLUMNA ORIGINAL (Para las tablas)
-            if 'ESTATUS PROSPECTO' in df_global.columns:
-                df_global['ESTATUS PROSPECTO'] = df_global['ESTATUS PROSPECTO'].replace("", "PROSPECTO SIN ATENDER")
-            
-            # 4. MOTOR DE FECHAS (Forzar a datetime)
-            df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
-            
-            # FILTRO DESTRUCTOR: Eliminar cualquier fila que no haya arrojado una fecha válida
-            df_global = df_global.dropna(subset=['FECHA_DATETIME'])
-            
-            # Extraer AÑO (Garantizado que es un número válido)
-            df_global['AÑO'] = df_global['FECHA_DATETIME'].dt.year.astype(int).astype(str)
-            
-            # Extraer MES en número y texto
-            df_global['MES_NUM'] = df_global['FECHA_DATETIME'].dt.month.astype(int)
-            meses_map = {
-                1: 'ENERO', 2: 'FEBRERO', 3: 'MARZO', 4: 'ABRIL',
-                5: 'MAYO', 6: 'JUNIO', 7: 'JULIO', 8: 'AGOSTO',
-                9: 'SEPTIEMBRE', 10: 'OCTUBRE', 11: 'NOVIEMBRE', 12: 'DICIEMBRE'
-            }
-            df_global['MES'] = df_global['MES_NUM'].map(meses_map)
-            
-        else:
-            st.error("No se encontró la columna 'FECHA SOLICITUD'. Verifica que los títulos estén exactamente en la Fila 8 del Excel.")
-            st.stop()
-            
+            if val_a != "":          # Siempre y cuando exista dato en Columna A
+                if val_l == "":      # Nada en Columna L -> SIN ATENDER
+                    return "SIN ATENDER"
+                else:                # Sí hay algo en Columna L
+                    if val_q != "":  # Si también hay algo en Columna Q -> Dejar Columna Q
+                        return val_q
+                    else:            # Si no hay nada en Q -> Dejar Columna L
+                        return val_l
+            return ""                # Si Columna A está vacía, se considera vacío
+        
+        df_global['ESTATUS_GRAFICO'] = df_global.apply(regla_atencion_grafica, axis=1)
+        
+        # 3. MOTOR DE FECHAS (Soporta formatos con o sin cero inicial, ej. 5/8/2026 o 05/08/2026)
+        df_global['FECHA_DATETIME'] = pd.to_datetime(
+            df_global['FECHA SOLICITUD'], dayfirst=True, format='mixed', errors='coerce'
+        )
+        
+        # Eliminar filas cuya fecha no sea válida para evitar "SIN FECHA"
+        df_global = df_global.dropna(subset=['FECHA_DATETIME'])
+        
+        df_global['AÑO'] = df_global['FECHA_DATETIME'].dt.year.astype(int).astype(str)
+        df_global['MES_NUM'] = df_global['FECHA_DATETIME'].dt.month.astype(int)
+        meses_map = {
+            1: 'ENERO', 2: 'FEBRERO', 3: 'MARZO', 4: 'ABRIL',
+            5: 'MAYO', 6: 'JUNIO', 7: 'JULIO', 8: 'AGOSTO',
+            9: 'SEPTIEMBRE', 10: 'OCTUBRE', 11: 'NOVIEMBRE', 12: 'DICIEMBRE'
+        }
+        df_global['MES'] = df_global['MES_NUM'].map(meses_map)
+        
         return df_global
     else:
         return pd.DataFrame()
@@ -146,7 +171,7 @@ with st.spinner("Descargando bases de datos (esto solo toma tiempo al iniciar se
     df = cargar_cartera_global()
 
 if df.empty:
-    st.error("No se extrajo ningún dato. Verifica las bases de los vendedores.")
+    st.error("No se extrajo ningún dato válido. Verifica que las hojas tengan registros con Fecha de Solicitud.")
     st.stop()
 
 # =========================================================================
@@ -197,14 +222,14 @@ with tab_general:
     col1, col2, col3, col4 = st.columns(4)
     total_leads = len(df_filtrado)
     
-    if "ESTATUS PROSPECTO" in df_filtrado.columns:
-        leads_interes = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["SEGUIMIENTO", "COTIZADO", "FINANCIAMIENTO"])])
-        ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["FACTURADO", "CIERRE DE VENTA"])])
-    else:
-        leads_interes, ventas_cerradas = 0, 0
+    leads_interes = len(df_filtrado[
+        (df_filtrado["PRIMER FILTRO"] == "PROSPECTO CON INTERES") |
+        (df_filtrado["ESTATUS PROSPECTO"].isin(["SEGUIMIENTO", "COTIZADO", "FINANCIAMIENTO"]))
+    ])
+    ventas_cerradas = len(df_filtrado[df_filtrado["ESTATUS PROSPECTO"].isin(["FACTURADO", "CIERRE DE VENTA"])])
 
     col1.metric("Total Leads Filtrados", total_leads)
-    col2.metric("Prospectos Activos", leads_interes)
+    col2.metric("Prospectos con Interés", leads_interes)
     col3.metric("Ventas Cerradas", ventas_cerradas)
     col4.metric("Tasa de Cierre", f"{(ventas_cerradas / total_leads * 100):.1f}%" if total_leads > 0 else "0%")
     st.markdown("---")
@@ -213,25 +238,21 @@ with tab_general:
         gen_row1_col1, gen_row1_col2 = st.columns([1, 2])
         with gen_row1_col1:
             st.subheader("Plataforma Más Utilizada")
-            if "PLATAFORMA" in df_filtrado.columns:
-                fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                st.plotly_chart(fig_plat, use_container_width=True)
+            fig_plat = px.pie(df_filtrado, names='PLATAFORMA', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            st.plotly_chart(fig_plat, use_container_width=True)
                 
         with gen_row1_col2:
             st.subheader("Evolución Mensual por Anuncio")
-            if "ANUNCIO" in df_filtrado.columns:
-                fig_ad = px.histogram(df_filtrado, x='MES', color='ANUNCIO', barmode='group', 
-                                      color_discrete_sequence=px.colors.qualitative.Safe)
-                fig_ad.update_layout(xaxis_title="", yaxis_title="Cantidad de Leads")
-                st.plotly_chart(fig_ad, use_container_width=True)
+            fig_ad = px.histogram(df_filtrado, x='MES', color='ANUNCIO', barmode='group', 
+                                  color_discrete_sequence=px.colors.qualitative.Safe)
+            fig_ad.update_layout(xaxis_title="", yaxis_title="Cantidad de Leads")
+            st.plotly_chart(fig_ad, use_container_width=True)
 
         st.subheader("Crecimiento de Demanda por Unidad de Interés")
-        
-        if "UNIDAD DE INTERES" in df_filtrado.columns:
-            fig_unidad = px.histogram(df_filtrado, x='MES', color="UNIDAD DE INTERES", barmode='stack',
-                                      color_discrete_sequence=px.colors.qualitative.Bold)
-            fig_unidad.update_layout(xaxis_title="Mes", yaxis_title="Cotizaciones / Interés")
-            st.plotly_chart(fig_unidad, use_container_width=True)
+        fig_unidad = px.histogram(df_filtrado, x='MES', color="UNIDAD DE INTERES", barmode='stack',
+                                  color_discrete_sequence=px.colors.qualitative.Bold)
+        fig_unidad.update_layout(xaxis_title="Mes", yaxis_title="Cotizaciones / Interés")
+        st.plotly_chart(fig_unidad, use_container_width=True)
     else:
         st.warning("No hay registros que coincidan con los filtros seleccionados.")
 
@@ -241,27 +262,26 @@ with tab_general:
 with tab_asesor:
     st.subheader("Nivel de Atención y Seguimiento por Asesor dado leads activos")
     
-    if total_leads > 0 and "ESTATUS_GRAFICO" in df_filtrado.columns:
-        # Filtramos para graficar únicamente aquellos con estatus válido
+    if total_leads > 0:
         df_grafico = df_filtrado[df_filtrado["ESTATUS_GRAFICO"] != ""]
         
         if not df_grafico.empty:
             rendimiento = df_grafico.groupby(['ASESOR ASIGNADO', 'ESTATUS_GRAFICO']).size().reset_index(name='CANTIDAD')
             
-            # Catálogo de colores mezclando Opciones de Columna L y Q
             mapa_colores_grafico = {
-                "SIN ATENDER": "#ff4b4b",               # Rojo Alerta (Si Columna A llena, pero L vacía)
-                "PROSPECTO CON INTERES": "#60a5fa",     # Azul claro (Primer Filtro L)
-                "ERROR DE CAPTURA": "#94a3b8",          # Gris (Primer Filtro L)
-                "YA NO TIENE INTERES": "#f97316",       # Naranja (Primer Filtro L)
-                "SIN ÉXITO DE CONTACTO": "#facc15",     # Amarillo (Primer Filtro L)
-                "SEGUIMIENTO": "#3b82f6",               # Azul (Estatus Q)
-                "COTIZADO": "#818cf8",                  # Azul claro (Estatus Q)
-                "FINANCIAMIENTO": "#eab308",            # Amarillo oscuro (Estatus Q)
-                "FACTURADO": "#22c55e",                 # Verde oscuro (Estatus Q)
-                "CIERRE DE VENTA": "#4ade80",           # Verde claro (Estatus Q)
-                "VENTA PERDIDA": "#ea580c",             # Naranja oscuro (Estatus Q)
-                "COMPRA CANCELADA": "#ef4444"           # Rojo (Estatus Q)
+                "SIN ATENDER": "#ff4b4b",               # Rojo Alerta (Col A llena, Col L vacía)
+                "PROSPECTO CON INTERES": "#60a5fa",     # Azul claro (Col L)
+                "ERROR DE CAPTURA": "#94a3b8",          # Gris (Col L)
+                "YA NO TIENE INTERES": "#f97316",       # Naranja (Col L)
+                "YA NO TIENE INTERÉS": "#f97316",       # Naranja con acento
+                "SIN ÉXITO DE CONTACTO": "#facc15",     # Amarillo (Col L)
+                "SEGUIMIENTO": "#3b82f6",               # Azul (Col Q)
+                "COTIZADO": "#818cf8",                  # Indigo (Col Q)
+                "FINANCIAMIENTO": "#eab308",            # Amarillo oscuro (Col Q)
+                "FACTURADO": "#22c55e",                 # Verde oscuro (Col Q)
+                "CIERRE DE VENTA": "#4ade80",           # Verde claro (Col Q)
+                "VENTA PERDIDA": "#ea580c",             # Naranja oscuro (Col Q)
+                "COMPRA CANCELADA": "#ef4444"           # Rojo (Col Q)
             }
             
             fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS_GRAFICO', barmode='stack',
@@ -269,8 +289,8 @@ with tab_asesor:
             fig_asesor.update_layout(xaxis_title="", yaxis_title="Leads Asignados", legend_title="Estatus de Atención")
             st.plotly_chart(fig_asesor, use_container_width=True)
         else:
-            st.warning("No hay leads válidos (Columna A vacía) para graficar en este periodo.")
-    elif total_leads == 0:
+            st.warning("No hay leads válidos (Columna A con datos) para graficar en este periodo.")
+    else:
         st.warning("Ajusta los filtros para ver el rendimiento.")
 
     st.markdown("---")
@@ -279,9 +299,9 @@ with tab_asesor:
     # MÓDULO: RANKING JERÁRQUICO DE ATENCIÓN
     # ---------------------------------------------------------
     st.subheader("🏆 Ranking: Nivel de Atención por Asesor")
-    st.caption("Mide el porcentaje de prospectos que ya cuentan con un PRIMER FILTRO capturado por el vendedor.")
+    st.caption("Mide el porcentaje de prospectos atendidos (Columna L 'PRIMER FILTRO' capturada) sobre el total de leads asignados.")
     
-    if total_leads > 0 and "PRIMER FILTRO" in df_filtrado.columns:
+    if total_leads > 0:
         df_ranking = df_filtrado.groupby('ASESOR ASIGNADO').agg(
             LEADS_ASIGNADOS=('FECHA SOLICITUD', 'count'),
             LEADS_ATENDIDOS=('PRIMER FILTRO', lambda x: (x.astype(str).str.strip() != "").sum())
@@ -291,12 +311,12 @@ with tab_asesor:
         df_ranking = df_ranking.sort_values(by='NIVEL DE ATENCION (%)', ascending=False)
         
         def color_semaforo(val):
-            if val == 100:
-                return 'background-color: #d9ead3; color: #274e13; font-weight: bold;' # Verde
+            if val >= 100:
+                return 'background-color: #d9ead3; color: #274e13; font-weight: bold;' # Verde (100%)
             elif val >= 90:
-                return 'background-color: #fff2cc; color: #7f6000; font-weight: bold;' # Amarillo
+                return 'background-color: #fff2cc; color: #7f6000; font-weight: bold;' # Amarillo (90% - 99%)
             else:
-                return 'background-color: #f4cccc; color: #990000; font-weight: bold;' # Rojo
+                return 'background-color: #f4cccc; color: #990000; font-weight: bold;' # Rojo (<= 89%)
 
         st.dataframe(
             df_ranking.style.map(color_semaforo, subset=['NIVEL DE ATENCION (%)']).format({'NIVEL DE ATENCION (%)': '{:.1f}%'}),
@@ -307,35 +327,50 @@ with tab_asesor:
     st.markdown("---")
     st.subheader("Auditoría: Desglose de Cartera")
     
-    columnas_mostrar = ['AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD', 'NOMBRE CLIENTE']
-    
-    for col in ['PRIMER FILTRO', 'UNIDAD REAL DE INTERES', 'ESTATUS PROSPECTO', 'DIAS TRANSCURRIDOS SIN SEGUIMIENTO']:
-        if col in df_filtrado.columns:
-            columnas_mostrar.append(col)
+    columnas_mostrar = [
+        'AGENCIA', 'ASESOR ASIGNADO', 'FECHA SOLICITUD', 'NOMBRE CLIENTE',
+        'PRIMER FILTRO', 'UNIDAD REAL DE INTERES', 'ESTATUS PROSPECTO',
+        'COMENTARIO ASESOR', 'DIAS TRANSCURRIDOS SIN SEGUIMIENTO'
+    ]
 
     # ---------------------------------------------------------
     # TABLAS DE DESGLOSE (Activa, Sin Atender, Perdida)
     # ---------------------------------------------------------
-    if total_leads > 0 and "PRIMER FILTRO" in df_filtrado.columns and "ESTATUS PROSPECTO" in df_filtrado.columns:
-        
+    if total_leads > 0:
         condicion_atendido = df_filtrado["PRIMER FILTRO"].astype(str).str.strip() != ""
         condicion_vacio = df_filtrado["PRIMER FILTRO"].astype(str).str.strip() == ""
         
-        estatus_activos = ["SEGUIMIENTO", "COTIZADO", "FINANCIAMIENTO", "FACTURADO", "CIERRE DE VENTA"]
-        estatus_perdidos = ["VENTA PERDIDA", "COMPRA CANCELADA"]
+        estatus_activos_q = ["SEGUIMIENTO", "COTIZADO", "FINANCIAMIENTO", "FACTURADO", "CIERRE DE VENTA"]
+        estatus_perdidos_q = ["VENTA PERDIDA", "COMPRA CANCELADA"]
+        estatus_perdidos_l = ["YA NO TIENE INTERES", "YA NO TIENE INTERÉS", "ERROR DE CAPTURA"]
         
-        df_activa = df_filtrado[condicion_atendido & (df_filtrado["ESTATUS PROSPECTO"].isin(estatus_activos))]
+        # 1. Cartera Activa: Atendidos que siguen con interés o en seguimiento/cierre
+        df_activa = df_filtrado[
+            condicion_atendido & (
+                (df_filtrado["ESTATUS PROSPECTO"].isin(estatus_activos_q)) |
+                ((df_filtrado["ESTATUS PROSPECTO"].astype(str).str.strip() == "") & (df_filtrado["PRIMER FILTRO"] == "PROSPECTO CON INTERES"))
+            )
+        ]
+        
+        # 2. Cartera Sin Atender: Leads asignados donde el asesor aún no llena el Primer Filtro
         df_sin_atender = df_filtrado[condicion_vacio]
-        df_perdida = df_filtrado[condicion_atendido & (df_filtrado["ESTATUS PROSPECTO"].isin(estatus_perdidos))]
+        
+        # 3. Cartera Perdida: Descartados en Primer Filtro o en Seguimiento
+        df_perdida = df_filtrado[
+            condicion_atendido & (
+                (df_filtrado["PRIMER FILTRO"].isin(estatus_perdidos_l)) |
+                (df_filtrado["ESTATUS PROSPECTO"].isin(estatus_perdidos_q))
+            )
+        ]
 
         st.markdown("##### 🟢 Detalle de Cartera Activa")
-        st.caption("Prospectos que ya pasaron el Primer Filtro y están en fase de cotización, financiamiento o cierre.")
+        st.caption("Prospectos atendidos que se mantienen con interés, en seguimiento, cotización, financiamiento o venta cerrada.")
         st.dataframe(df_activa[columnas_mostrar], use_container_width=True, hide_index=True)
 
         st.markdown("##### 🔴 Cartera Sin Atender")
-        st.caption("Prospectos nuevos que AÚN NO tienen captura en 'Primer Filtro'.")
+        st.caption("Prospectos asignados donde el vendedor AÚN NO captura el Primer Filtro.")
         st.dataframe(df_sin_atender[columnas_mostrar], use_container_width=True, hide_index=True)
 
         st.markdown("##### 🟠 Cartera Perdida")
-        st.caption("Prospectos descartados (Compra cancelada o Venta perdida).")
+        st.caption("Prospectos descartados por falta de interés, error de captura, compra cancelada o venta perdida.")
         st.dataframe(df_perdida[columnas_mostrar], use_container_width=True, hide_index=True)
