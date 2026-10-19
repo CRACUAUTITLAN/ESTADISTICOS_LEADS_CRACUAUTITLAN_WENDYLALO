@@ -65,10 +65,8 @@ def cargar_cartera_global():
             hoja = client.open_by_key(id_archivo).sheet1
             datos = hoja.get_all_values()
             
-            if len(datos) > 8:
-                titulos = [str(col).strip() for col in datos[7]]
-                
-                df_temporal = pd.DataFrame(datos[8:], columns=titulos)
+            if len(datos) > 7:
+                df_temporal = pd.DataFrame(datos[7:], columns=datos[6])
                 
                 df_temporal = df_temporal.loc[:, df_temporal.columns != ""]
                 df_temporal = df_temporal.loc[:, ~df_temporal.columns.duplicated()]
@@ -93,11 +91,32 @@ def cargar_cartera_global():
             # 1. Eliminar filas vacías o con puros espacios
             df_global = df_global[df_global['FECHA SOLICITUD'].astype(str).str.strip() != ""]
             
-            # 2. LIMPIEZA DE ESTATUS VACÍOS EN LA NUEVA COLUMNA
+            # 🚀 2. MOTOR NUEVO: ESTATUS PARA LA GRÁFICA (A = ANUNCIO, L = PRIMER FILTRO, Q = ESTATUS PROSPECTO)
+            if set(['ANUNCIO', 'PRIMER FILTRO', 'ESTATUS PROSPECTO']).issubset(df_global.columns):
+                def regla_atencion_grafica(row):
+                    val_a = str(row['ANUNCIO']).strip()
+                    val_l = str(row['PRIMER FILTRO']).strip()
+                    val_q = str(row['ESTATUS PROSPECTO']).strip()
+                    
+                    if val_a != "":          # Si hay lead (Columna A llena)
+                        if val_l == "":      # Si L está vacía
+                            return "SIN ATENDER"
+                        else:                # Si L tiene algo
+                            if val_q != "":  # Y Q tiene algo
+                                return val_q
+                            else:            # Y Q NO tiene nada, dejamos lo de L
+                                return val_l
+                    return ""                # Si no hay lead (A vacía), no grafica nada
+                
+                df_global['ESTATUS_GRAFICO'] = df_global.apply(regla_atencion_grafica, axis=1)
+            else:
+                df_global['ESTATUS_GRAFICO'] = ""
+            
+            # 3. LIMPIEZA DE ESTATUS VACÍOS EN LA COLUMNA ORIGINAL (Para las tablas)
             if 'ESTATUS PROSPECTO' in df_global.columns:
                 df_global['ESTATUS PROSPECTO'] = df_global['ESTATUS PROSPECTO'].replace("", "PROSPECTO SIN ATENDER")
             
-            # 3. MOTOR DE FECHAS (Forzar a datetime)
+            # 4. MOTOR DE FECHAS (Forzar a datetime)
             df_global['FECHA_DATETIME'] = pd.to_datetime(df_global['FECHA SOLICITUD'], format='%d/%m/%Y', errors='coerce')
             
             # FILTRO DESTRUCTOR: Eliminar cualquier fila que no haya arrojado una fecha válida
@@ -208,7 +227,6 @@ with tab_general:
 
         st.subheader("Crecimiento de Demanda por Unidad de Interés")
         
-        # 🚀 CORRECCIÓN: Ahora lee estrictamente la unidad original (Demanda de Marketing)
         if "UNIDAD DE INTERES" in df_filtrado.columns:
             fig_unidad = px.histogram(df_filtrado, x='MES', color="UNIDAD DE INTERES", barmode='stack',
                                       color_discrete_sequence=px.colors.qualitative.Bold)
@@ -223,24 +241,35 @@ with tab_general:
 with tab_asesor:
     st.subheader("Nivel de Atención y Seguimiento por Asesor dado leads activos")
     
-    if total_leads > 0 and "ESTATUS PROSPECTO" in df_filtrado.columns:
-        rendimiento = df_filtrado.groupby(['ASESOR ASIGNADO', 'ESTATUS PROSPECTO']).size().reset_index(name='CANTIDAD')
+    if total_leads > 0 and "ESTATUS_GRAFICO" in df_filtrado.columns:
+        # Filtramos para graficar únicamente aquellos con estatus válido
+        df_grafico = df_filtrado[df_filtrado["ESTATUS_GRAFICO"] != ""]
         
-        mapa_colores = {
-            "PROSPECTO SIN ATENDER": "#ff4b4b", # Rojo Alerta
-            "SEGUIMIENTO": "#3b82f6",           # Azul
-            "COTIZADO": "#818cf8",              # Azul claro
-            "FINANCIAMIENTO": "#facc15",        # Amarillo
-            "FACTURADO": "#22c55e",             # Verde oscuro
-            "CIERRE DE VENTA": "#4ade80",       # Verde claro
-            "VENTA PERDIDA": "#f97316",         # Naranja
-            "COMPRA CANCELADA": "#ef4444"       # Rojo
-        }
-        
-        fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS PROSPECTO', barmode='stack',
-                            color_discrete_map=mapa_colores)
-        fig_asesor.update_layout(xaxis_title="", yaxis_title="Leads Asignados")
-        st.plotly_chart(fig_asesor, use_container_width=True)
+        if not df_grafico.empty:
+            rendimiento = df_grafico.groupby(['ASESOR ASIGNADO', 'ESTATUS_GRAFICO']).size().reset_index(name='CANTIDAD')
+            
+            # Catálogo de colores mezclando Opciones de Columna L y Q
+            mapa_colores_grafico = {
+                "SIN ATENDER": "#ff4b4b",               # Rojo Alerta (Si Columna A llena, pero L vacía)
+                "PROSPECTO CON INTERES": "#60a5fa",     # Azul claro (Primer Filtro L)
+                "ERROR DE CAPTURA": "#94a3b8",          # Gris (Primer Filtro L)
+                "YA NO TIENE INTERES": "#f97316",       # Naranja (Primer Filtro L)
+                "SIN ÉXITO DE CONTACTO": "#facc15",     # Amarillo (Primer Filtro L)
+                "SEGUIMIENTO": "#3b82f6",               # Azul (Estatus Q)
+                "COTIZADO": "#818cf8",                  # Azul claro (Estatus Q)
+                "FINANCIAMIENTO": "#eab308",            # Amarillo oscuro (Estatus Q)
+                "FACTURADO": "#22c55e",                 # Verde oscuro (Estatus Q)
+                "CIERRE DE VENTA": "#4ade80",           # Verde claro (Estatus Q)
+                "VENTA PERDIDA": "#ea580c",             # Naranja oscuro (Estatus Q)
+                "COMPRA CANCELADA": "#ef4444"           # Rojo (Estatus Q)
+            }
+            
+            fig_asesor = px.bar(rendimiento, x='ASESOR ASIGNADO', y='CANTIDAD', color='ESTATUS_GRAFICO', barmode='stack',
+                                color_discrete_map=mapa_colores_grafico)
+            fig_asesor.update_layout(xaxis_title="", yaxis_title="Leads Asignados", legend_title="Estatus de Atención")
+            st.plotly_chart(fig_asesor, use_container_width=True)
+        else:
+            st.warning("No hay leads válidos (Columna A vacía) para graficar en este periodo.")
     elif total_leads == 0:
         st.warning("Ajusta los filtros para ver el rendimiento.")
 
